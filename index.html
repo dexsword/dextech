@@ -1,0 +1,126 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Dex Tech</title>
+    <link rel="stylesheet" href="styles.css">
+    <style>
+        .tip-button {
+            background-color: #007bff;
+            color: white;
+            padding: 10px 20px;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+        }
+        .tip-button:hover {
+            background-color: #0056b3;
+        }
+        /* Hide images by default */
+        .image-container {
+            display: none;
+            text-align: center; /* Center-align text */
+        }
+
+        /* Center images horizontally */
+        .image-container img {
+            width: 300px;
+            height: auto;
+            margin: 0 auto; 
+        }
+    </style>
+    <script>
+        function displayImage(imageId, textId) {
+            var image = document.getElementById(imageId);
+            var text = document.getElementById(textId);
+            
+            if (image.style.display === 'none') {
+                image.style.display = 'block';
+                text.style.display = 'block';
+            } else {
+                image.style.display = 'none';
+                text.style.display = 'none';
+            }
+        }
+    </script>
+</head>
+<body>
+    <header>
+        <h2 style="color: #ffffff;">*Work in Progress*</h2>
+        <h1>Dex Tech</h1>
+        <nav>
+            <ul>
+                <li><a href="#home">Home</a></li>
+                <li><a href="#contact">Contact</a></li>
+                <li><a href="#tip">Tip</a></li>
+            </ul>
+        </nav>
+	    <h2> Call (702)-960-1321 for a consultation </br> or emergency assistance!</h2>
+    </header>
+    
+    <section id="home">
+        <div class="container">
+            <h2 style="color: #000000;">Welcome to Dex Tech</h2>
+            <p>I specialize in providing expert recommendations, hands-on assistance, and comprehensive training for setting up and installing a wide range of consumer electronics. Whether you're a novice seeking guidance or a seasoned user looking to optimize your home or business setup, I'm committed to delivering tailored solutions and empowering you with the skills and knowledge needed to make the most of your devices and systems.</p>
+        </div>
+    </section>
+    <section id="contact" class="centered">
+        <div class="centered">
+            <div class="form" data-tf-live="01HS6PN0H03TFEEKNCB98VHH5Y"></div><script src="//embed.typeform.com/next/embed.js"></script>
+        </div>
+    </section>
+
+    <!--
+    <section id="contact">
+        <div class="centered-iframe" style="text-align: center;">
+        <iframe src="https://docs.google.com/forms/d/e/1FAIpQLSfu6TNRZGc0VMmg9wKDhYop3rk4VvI6DcMw_zozh_DLqIAlCQ/viewform?embedded=true" width="400" height="1000" frameborder="0" marginheight="0" marginwidth="0"></iframe>
+        </div>
+    </section>
+    -->
+    <section id="tip">
+        <div class="container">
+            <h1>Tip Me Here!</h1>
+            <p>If you found my content helpful, feel free to send a tip using any of the following cryptocurrencies:</p>
+            <!-- Button to display Paypal image -->
+            <button class="tip-button" onclick="displayImage('paypal', 'paypalText')">Show Paypal</button><br>
+            <!-- Button to display Bitcoin image -->
+            <button class="tip-button" onclick="displayImage('btcImage', 'btcText')">Show Bitcoin Address</button><br>
+            <!-- Button to display Ethereum image -->
+            <button class="tip-button" onclick="displayImage('ethImage', 'ethText')">Show Ethereum Address</button><br>
+            <!-- Button to display Solana image -->
+            <button class="tip-button" onclick="displayImage('solImage', 'solText')">Show Solana Address</button><br><br>
+            
+            <!-- Images -->
+            <div class="container">
+                <div class="image-container" id="paypal">
+                    <img src="paypal.jpg" alt="Paypal QR">
+                    <p id="paypalText">Tip any amount!</p>
+                </div>
+                <div class="image-container" id="btcImage">
+                    <img src="btc.jpg" alt="BTC Address">
+                    <p id="btcText">BTC Address: bc1qplquerydf96ejper32pr5j97d3au3kyscjz9jp</p>
+                </div>
+                <div class="image-container" id="ethImage">
+                    <img src="eth.jpg" alt="Ethereum Address">
+                    <p id="ethText">Ethereum Address: 0xD5E100a79C57219279A02af12623aD5B1d84F939</p>
+                </div>
+                <div class="image-container" id="solImage">
+                    <img src="sol.jpg" alt="Solana Address">
+                    <p id="solText">Solana Address: NoHmSy9pDyDph64PdjRoUeJfdEcWZyjLVuv1WSCAowJaCn</p>
+                </div>
+            </div>
+            <p>Thank you for your support!</p>            
+        </div>
+    </section>
+    
+    <footer>
+        <p>&copy; 2024 Dex Tech. All rights reserved.</p>
+        <ul>
+            <li><a href="#home">Home</a></li>
+            <li><a href="#contact">Contact</a></li>
+            <li><a href="#tip">Tip</a></li>
+        </ul>
+    </footer>
+</body>
+</html>
