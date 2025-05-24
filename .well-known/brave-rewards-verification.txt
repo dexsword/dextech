@@ -1,0 +1,4 @@
+This is a Brave Creators publisher verification file.
+
+Domain: dextech.cloud
+Token: 899af986e30a864330977251d61329331334fd3959f60727f563b4fff3fc1ae7
