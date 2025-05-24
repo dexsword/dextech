@@ -7,138 +7,7 @@
   <link rel="canonical" href="https://dextech.cloud" />
   <title>Dex Tech</title>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap" rel="stylesheet">
-  <style>
-    * {
-      margin: 0;
-      padding: 0;
-      box-sizing: border-box;
-      font-family: 'Inter', sans-serif;
-    }
-
-    body {
-      background-color: #f9f9f9;
-      color: #333;
-      line-height: 1.6;
-    }
-
-    header {
-      background-color: #222;
-      color: #fff;
-      padding: 2rem 1rem;
-      text-align: center;
-    }
-
-    nav ul {
-      list-style: none;
-      display: flex;
-      justify-content: center;
-      gap: 2rem;
-      margin-top: 1rem;
-    }
-
-    nav ul li a {
-      color: #fff;
-      text-decoration: none;
-      font-weight: 600;
-    }
-
-    .hero {
-      padding: 3rem 1rem;
-      text-align: center;
-      background-color: #e3f2fd;
-    }
-
-    .container {
-      max-width: 1000px;
-      margin: 0 auto;
-      padding: 2rem 1rem;
-    }
-
-    .services {
-      display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
-      gap: 2rem;
-    }
-
-    .service {
-      background: #fff;
-      border-radius: 10px;
-      padding: 1.5rem;
-      box-shadow: 0 4px 10px rgba(0,0,0,0.1);
-    }
-
-    .service h3 {
-      margin-bottom: 1rem;
-      color: #007bff;
-    }
-
-    .form {
-      text-align: center;
-    }
-
-    footer {
-      background-color: #222;
-      color: white;
-      padding: 2rem 1rem;
-      text-align: center;
-    }
-
-    footer ul {
-      list-style: none;
-      display: flex;
-      justify-content: center;
-      gap: 2rem;
-      padding: 1rem 0;
-    }
-
-    footer ul li a {
-      color: #fff;
-      text-decoration: none;
-    }
-
-    .tip-section {
-      margin-top: 3rem;
-    }
-
-    .tip-button {
-      background-color: #007bff;
-      color: white;
-      padding: 10px 20px;
-      border: none;
-      border-radius: 5px;
-      cursor: pointer;
-      margin-bottom: 0.5rem;
-    }
-
-    .tip-button:hover {
-      background-color: #0056b3;
-    }
-
-    .image-container {
-      display: none;
-      text-align: center;
-      margin-top: 1rem;
-    }
-
-    .image-container img {
-      width: 220px;
-      height: auto;
-    }
-  </style>
-  <script>
-    function displayImage(imageId, textId) {
-      const image = document.getElementById(imageId);
-      const text = document.getElementById(textId);
-      const isHidden = image.style.display === 'none';
-
-      document.querySelectorAll('.image-container').forEach(el => el.style.display = 'none');
-
-      if (isHidden) {
-        image.style.display = 'block';
-        text.style.display = 'block';
-      }
-    }
-  </script>
+  <link rel="stylesheet" href="style.css">
 </head>
 <body>
   <header>
@@ -192,25 +61,28 @@
       <p>If you'd like to send a tip, choose a method below:</p>
 
       <button class="tip-button" onclick="displayImage('paypal', 'paypalText')">Show PayPal</button><br>
-      <button class="tip-button" onclick="displayImage('btcImage', 'btcText')">Show Bitcoin</button><br>
-      <button class="tip-button" onclick="displayImage('ethImage', 'ethText')">Show Ethereum</button><br>
-      <button class="tip-button" onclick="displayImage('solImage', 'solText')">Show Solana</button>
-
+      <button class="tip-button" onclick="displayImage('paypal', 'paypalText')">Show PayPal QR</button><br>
+      <p id="paypalText" style="display: block;">Tip any amount via PayPal</p>
       <div class="image-container" id="paypal">
         <img src="paypal.jpg" alt="Paypal QR">
-        <p id="paypalText">Tip any amount via PayPal</p>
       </div>
+
+      <button class="tip-button" onclick="displayImage('btcImage', 'btcText')">Show Bitcoin QR</button><br>
+      <p id="btcText" style="display: block;">BTC: bc1qplquerydf96ejper32pr5j97d3au3kyscjz9jp <button class="copy-button" onclick="copyToClipboard('bc1qplquerydf96ejper32pr5j97d3au3kyscjz9jp', this)">Copy</button></p>
       <div class="image-container" id="btcImage">
-        <img src="btc.jpg" alt="Bitcoin Address">
-        <p id="btcText">BTC: bc1qplquerydf96ejper32pr5j97d3au3kyscjz9jp</p>
+        <img src="btc.jpg" alt="Bitcoin Address QR">
       </div>
+
+      <button class="tip-button" onclick="displayImage('ethImage', 'ethText')">Show Ethereum QR</button><br>
+      <p id="ethText" style="display: block;">ETH: 0xD5E100a79C57219279A02af12623aD5B1d84F939 <button class="copy-button" onclick="copyToClipboard('0xD5E100a79C57219279A02af12623aD5B1d84F939', this)">Copy</button></p>
       <div class="image-container" id="ethImage">
-        <img src="eth.jpg" alt="Ethereum Address">
-        <p id="ethText">ETH: 0xD5E100a79C57219279A02af12623aD5B1d84F939</p>
+        <img src="eth.jpg" alt="Ethereum Address QR">
       </div>
+
+      <button class="tip-button" onclick="displayImage('solImage', 'solText')">Show Solana QR</button><br>
+      <p id="solText" style="display: block;">SOL: NoHmSy9pDyDph64PdjRoUeJfdEcWZyjLVuv1WSCAowJaCn <button class="copy-button" onclick="copyToClipboard('NoHmSy9pDyDph64PdjRoUeJfdEcWZyjLVuv1WSCAowJaCn', this)">Copy</button></p>
       <div class="image-container" id="solImage">
-        <img src="sol.jpg" alt="Solana Address">
-        <p id="solText">SOL: NoHmSy9pDyDph64PdjRoUeJfdEcWZyjLVuv1WSCAowJaCn</p>
+        <img src="sol.jpg" alt="Solana Address QR">
       </div>
     </div>
 
@@ -221,5 +93,7 @@
       <li><a href="#contact">Contact</a></li>
     </ul>
   </footer>
+  <script src="script.js"></script>
+  <script src="tests.js" defer></script>
 </body>
 </html>
