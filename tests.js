@@ -24,12 +24,13 @@ function assertEquals(expected, actual, message) {
 function assertVisible(element, message) {
     totalTests++;
     // Check if style.display is 'block' or if it's not 'none' (more flexible for other display types)
-    if (element && (element.style.display === 'block' || (element.style.display !== 'none' && getComputedStyle(element).display !== 'none'))) {
+    // and also check computed style for elements that might be visible by default without inline style.display
+    if (element && (element.style.display === 'block' || (element.style.display !== 'none' && getComputedStyle(element).display === 'block'))) {
         passedTests++;
         console.log(`PASS: ${message}`);
     } else {
         console.error(`FAIL: ${message} - Element is not visible or does not exist.`);
-        if(element) console.log(`Element display style: ${element.style.display}, computed: ${getComputedStyle(element).display}`);
+        if(element) console.log(`Element display style: ${element.style.display}, computed: ${getComputedStyle(element).display}`); else console.log("Element not found for assertion.");
     }
 }
 
@@ -40,69 +41,175 @@ function assertHidden(element, message) {
         console.log(`PASS: ${message}`);
     } else {
         console.error(`FAIL: ${message} - Element is not hidden or does not exist.`);
-         if(element) console.log(`Element display style: ${element.style.display}, computed: ${getComputedStyle(element).display}`);
+         if(element) console.log(`Element display style: ${element.style.display}, computed: ${getComputedStyle(element).display}`); else console.log("Element not found for assertion.");
     }
 }
 
-// Test 1: Tip Button Functionality
+// Test 1: Tip Button Functionality (QR Code Display)
 async function testTipButtonFunctionality() {
-    console.log("\n--- Testing Tip Button Functionality ---");
-    const tipButtons = [
-        { buttonSelector: "button[onclick*=\"displayImage('paypal'\"]", imageId: "paypal", textId: "paypalText" },
-        { buttonSelector: "button[onclick*=\"displayImage('btcImage'\"]", imageId: "btcImage", textId: "btcText" },
-        { buttonSelector: "button[onclick*=\"displayImage('ethImage'\"]", imageId: "ethImage", textId: "ethText" },
-        { buttonSelector: "button[onclick*=\"displayImage('solImage'\"]", imageId: "solImage", textId: "solText" }
-    ];
-    const allImageIds = ["paypal", "btcImage", "ethImage", "solImage"];
+    console.log("\n--- Testing Tip Button (QR Code Display) Functionality ---");
+    const tipButtonConfigs = [
+        // Note: The first PayPal button in index.html is a duplicate and should be fixed or removed in HTML.
+        // Selecting the one that correctly corresponds to the QR code image.
+        // The selector `button[onclick*="displayImage('paypal'"]` might pick the first one if not more specific.
+        // Let's assume the HTML structure is: button, then p, then div.image-container.
+        // A more robust selector might be needed if HTML changes, e.g., by adding unique IDs to buttons.
+        // For now, we rely on the order and the onclick attribute.
+        // The duplicate PayPal button "Show PayPal" vs "Show PayPal QR" also needs addressing in HTML.
+        // The tests will use the one that shows the QR.
+        // Let's find the buttons more reliably.
+        // The buttons are:
+        // 1. Show PayPal (onclick="displayImage('paypal', 'paypalText')") - THIS IS A DUPLICATE and text is wrong.
+        // 2. Show PayPal QR (onclick="displayImage('paypal', 'paypalText')")
+        // 3. Show Bitcoin QR (onclick="displayImage('btcImage', 'btcText')")
+        // 4. Show Ethereum QR (onclick="displayImage('ethImage', 'ethText')")
+        // 5. Show Solana QR (onclick="displayImage('solImage', 'solText')")
 
-    for (const item of tipButtons) {
-        const button = document.querySelector(item.buttonSelector);
+        // We need to select the *correct* buttons. The `*=` selector is fine but may not be unique if text is similar.
+        // The issue is the duplicate PayPal button in the provided HTML.
+        // The `read_files` output for `index.html` shows:
+        // <button class="tip-button" onclick="displayImage('paypal', 'paypalText')">Show PayPal</button><br>
+        // <button class="tip-button" onclick="displayImage('paypal', 'paypalText')">Show PayPal QR</button><br>
+        // This is problematic. The tests should ideally target unique buttons.
+        // For now, I will assume the test clicks the *second* PayPal button for 'paypal' imageId.
+        // This is fragile. A better fix is to give buttons unique IDs.
+        // The current querySelector might pick the first one.
+
+        // To make selectors more specific for the test, if possible:
+        // Let's assume the querySelector gets the first one, which is fine if it works,
+        // but the duplicate button itself is an issue in `index.html`.
+        // The `script.js` `displayImage` uses the `imageId` which is unique for the container.
+        // The problem is which button triggers it.
+
+        { buttonTextContent: "Show PayPal QR", imageId: "paypal" }, // Assuming this text uniquely identifies the correct button
+        { buttonTextContent: "Show Bitcoin QR", imageId: "btcImage" },
+        { buttonTextContent: "Show Ethereum QR", imageId: "ethImage" },
+        { buttonTextContent: "Show Solana QR", imageId: "solImage" }
+    ];
+    const allImageContainerIds = tipButtonConfigs.map(config => config.imageId);
+
+    function getButtonByTextAndOnClick(text, imageId) {
+        const buttons = Array.from(document.querySelectorAll('.tip-button'));
+        return buttons.find(btn => btn.textContent === text && btn.getAttribute('onclick').includes(`displayImage('${imageId}'`));
+    }
+
+
+    // Part 1: Test individual button toggle (show/hide)
+    console.log("\nPart 1: Testing individual button toggle (show/hide)...");
+    for (const config of tipButtonConfigs) {
+        const button = getButtonByTextAndOnClick(config.buttonTextContent, config.imageId);
         if (!button) {
-            console.error(`FAIL: Tip button for ${item.imageId} not found.`);
+            console.error(`FAIL: Tip button for image container ${config.imageId} with text "${config.buttonTextContent}" not found.`);
             totalTests++; // Count this as a failed setup
             continue;
         }
 
-        console.log(`Simulating click on button for: ${item.imageId}`);
+        const targetImageContainer = document.getElementById(config.imageId);
+        if (!targetImageContainer) {
+            console.error(`FAIL: Image container #${config.imageId} not found.`);
+            totalTests++;
+            continue;
+        }
+
+        console.log(`\nTesting button for: ${config.imageId}`);
+
+        // --- First click: Show image container ---
+        console.log(`Simulating first click on button for: ${config.imageId} (to show)`);
         button.click();
-        // Wait for potential script execution and style changes
-        await new Promise(resolve => setTimeout(resolve, 100));
+        await new Promise(resolve => setTimeout(resolve, 100)); // Wait for script execution
 
-
-        const targetImageContainer = document.getElementById(item.imageId);
-        assertVisible(targetImageContainer, `QR code container #${item.imageId} should be visible after click.`);
-
-        allImageIds.forEach(id => {
-            if (id !== item.imageId) {
-                const otherImageContainer = document.getElementById(id);
-                assertHidden(otherImageContainer, `Other QR code container #${id} should be hidden.`);
+        assertVisible(targetImageContainer, `Image container #${config.imageId} should be visible after first click.`);
+        allImageContainerIds.forEach(id => {
+            if (id !== config.imageId) {
+                const otherContainer = document.getElementById(id);
+                assertHidden(otherContainer, `Other image container #${id} should be hidden when #${config.imageId} is shown.`);
             }
         });
-         // Also check if the text associated with the QR is visible
-        const textElement = document.getElementById(item.textId);
-        // The text for crypto is always visible, for paypal it's toggled by displayImage.
-        if (item.imageId === 'paypal') {
-             assertVisible(textElement, `Text element #${item.textId} for PayPal should be visible.`);
-        } else {
-            // For crypto addresses, the <p> tag is always block, so we check its existence mainly.
-            // The script.js logic for displayImage also tries to set it to block.
-            if (textElement) {
-                 assertEquals('block', textElement.style.display, `Text element #${item.textId} for ${item.imageId} should have display:block.`);
-            } else {
-                console.error(`FAIL: Text element #${item.textId} for ${item.imageId} not found.`);
-                totalTests++;
-            }
-        }
 
-
-        // Click again to hide (if it's a toggle, which it is)
+        // --- Second click: Hide image container ---
+        console.log(`Simulating second click on button for: ${config.imageId} (to hide)`);
         button.click();
-        await new Promise(resolve => setTimeout(resolve, 100));
-        assertHidden(targetImageContainer, `QR code container #${item.imageId} should be hidden after second click.`);
-         if (item.imageId === 'paypal') { // Only paypal text is hidden on second click
-            assertHidden(textElement, `Text element #${item.textId} for PayPal should be hidden after second click.`);
+        await new Promise(resolve => setTimeout(resolve, 100)); // Wait for script execution
+
+        assertHidden(targetImageContainer, `Image container #${config.imageId} should be hidden after second click.`);
+        allImageContainerIds.forEach(id => {
+            // All should be hidden now, including the target one.
+            const otherContainer = document.getElementById(id);
+            assertHidden(otherContainer, `Other image container #${id} should also be hidden when #${config.imageId} is toggled off.`);
+        });
+    }
+
+    // Part 2: Test switching between different buttons
+    console.log("\nPart 2: Testing switching between different buttons...");
+    if (tipButtonConfigs.length < 2) {
+        console.log("Skipping switching test as less than 2 tip buttons are configured.");
+    } else {
+        const buttonA_config = tipButtonConfigs[0];
+        const buttonB_config = tipButtonConfigs[1];
+
+        const buttonA = getButtonByTextAndOnClick(buttonA_config.buttonTextContent, buttonA_config.imageId);
+        const imageContainerA = document.getElementById(buttonA_config.imageId);
+
+        const buttonB = getButtonByTextAndOnClick(buttonB_config.buttonTextContent, buttonB_config.imageId);
+        const imageContainerB = document.getElementById(buttonB_config.imageId);
+
+        if (!buttonA || !imageContainerA || !buttonB || !imageContainerB) {
+            console.error("FAIL: Setup failed for switching test (buttons or containers not found).");
+            totalTests += (buttonA && imageContainerA ? 0 : 1) + (buttonB && imageContainerB ? 0 : 1);
+        } else {
+            // Ensure all are hidden initially for a clean test sequence
+            console.log("Resetting state: ensuring all image containers are hidden before switching test.");
+            allImageContainerIds.forEach(id => {
+                const container = document.getElementById(id);
+                if (container.style.display !== 'none') {
+                     // Try clicking its button if some state is persisted from previous test part
+                     const btnConfig = tipButtonConfigs.find(c => c.imageId === id);
+                     if(btnConfig) {
+                        const btnToReset = getButtonByTextAndOnClick(btnConfig.buttonTextContent, btnConfig.imageId);
+                        if(btnToReset && container.style.display === 'block') btnToReset.click(); // click to hide
+                     }
+                }
+            });
+            await new Promise(resolve => setTimeout(resolve, 100)); // wait for reset click
+
+            allImageContainerIds.forEach(id => { // Verify reset
+                 assertHidden(document.getElementById(id), `Container #${id} should be hidden after reset for switching test.`);
+            });
+
+
+            // --- Click Button A ---
+            console.log(`\nSwitching Test: Clicking button for ${buttonA_config.imageId}`);
+            buttonA.click();
+            await new Promise(resolve => setTimeout(resolve, 100));
+            assertVisible(imageContainerA, `Image container #${buttonA_config.imageId} should be visible after clicking its button.`);
+            allImageContainerIds.forEach(id => {
+                if (id !== buttonA_config.imageId) {
+                    assertHidden(document.getElementById(id), `Other container #${id} should be hidden when #${buttonA_config.imageId} is shown.`);
+                }
+            });
+
+            // --- Click Button B ---
+            console.log(`Switching Test: Clicking button for ${buttonB_config.imageId}`);
+            buttonB.click();
+            await new Promise(resolve => setTimeout(resolve, 100));
+            assertVisible(imageContainerB, `Image container #${buttonB_config.imageId} should be visible after clicking its button.`);
+            assertHidden(imageContainerA, `Image container #${buttonA_config.imageId} should now be hidden after clicking button for #${buttonB_config.imageId}.`);
+            allImageContainerIds.forEach(id => {
+                if (id !== buttonB_config.imageId && id !== buttonA_config.imageId) { // buttonA already asserted hidden
+                    assertHidden(document.getElementById(id), `Other container #${id} should be hidden when #${buttonB_config.imageId} is shown.`);
+                }
+            });
+
+            // --- Click Button B again (to hide all) ---
+            console.log(`Switching Test: Clicking button for ${buttonB_config.imageId} again to hide`);
+            buttonB.click();
+            await new Promise(resolve => setTimeout(resolve, 100));
+            allImageContainerIds.forEach(id => {
+                assertHidden(document.getElementById(id), `All containers (inc #${id}) should be hidden after toggling off #${buttonB_config.imageId}.`);
+            });
         }
     }
+    console.log("--- Finished Testing Tip Button (QR Code Display) Functionality ---");
 }
 
 // Test 2: Copy to Clipboard Functionality

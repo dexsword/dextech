@@ -1,31 +1,31 @@
 function displayImage(imageId, textId) {
-  const image = document.getElementById(imageId);
-  const textElement = document.getElementById(textId); // Get the text element
+  // Get the target image container element
+  const targetImageContainer = document.getElementById(imageId);
 
-  // Hide all image containers first
+  if (!targetImageContainer) {
+    console.error(`Image container with ID "${imageId}" not found.`);
+    return;
+  }
+
+  // Determine if the target image container is currently visible
+  // Use getComputedStyle for a more robust check, though style.display should work if set directly.
+  const isCurrentlyVisible = targetImageContainer.style.display === 'block';
+
+  // Hide ALL image containers first
   document.querySelectorAll('.image-container').forEach(el => {
     el.style.display = 'none';
-    // Also hide related text elements if they are inside .image-container or managed similarly
-    // This example assumes textId elements are direct children or siblings managed along with imageId
-    const associatedTextId = el.id.replace('Image', 'Text'); // Simple convention: btcImage -> btcText
-     if (document.getElementById(associatedTextId) && el.id !== imageId.replace('Image', '')) { // ensure it's not the current one
-        // If text is outside image-container but linked, hide it.
-        // For this example, we assume text is inside image-container or managed by its display property.
-     }
   });
 
-  // Toggle display for the clicked image and its text
-  if (image.style.display === 'none') {
-    image.style.display = 'block';
-    if (textElement) { // Check if textElement exists
-        textElement.style.display = 'block'; // Ensure text is visible
-    }
-  } else {
-    image.style.display = 'none';
-    if (textElement) { // Check if textElement exists
-        textElement.style.display = 'none'; // Hide text if image is hidden
-    }
+  // If the target image container was NOT visible before we hid everything, then show it.
+  // This creates the toggle effect: if it was hidden, show it. If it was shown, it's now hidden by the loop above.
+  if (!isCurrentlyVisible) {
+    targetImageContainer.style.display = 'block';
   }
+
+  // The textId parameter and textElement logic have been removed
+  // as the associated text paragraphs (e.g., p#paypalText, p#btcText)
+  // are styled with "display: block;" inline in index.html,
+  // meaning they are intended to be always visible and not toggled by this function.
 }
 
 function copyToClipboard(text, buttonElement) {
