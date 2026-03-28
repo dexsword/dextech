@@ -1,4 +1,22 @@
 document.addEventListener('DOMContentLoaded', function() {
+  const revealElements = document.querySelectorAll('.service-card, .trust-item, .tip-item');
+  revealElements.forEach(function(el) {
+    el.classList.add('reveal');
+  });
+
+  const revealObserver = new IntersectionObserver(function(entries) {
+    entries.forEach(function(entry) {
+      if (entry.isIntersecting) {
+        entry.target.classList.add('visible');
+        revealObserver.unobserve(entry.target);
+      }
+    });
+  }, { threshold: 0.1, rootMargin: '0px 0px -50px 0px' });
+
+  revealElements.forEach(function(el) {
+    revealObserver.observe(el);
+  });
+
   const mobileMenuBtn = document.getElementById('mobileMenuBtn');
   const navLinks = document.getElementById('navLinks');
 
