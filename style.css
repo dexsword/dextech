@@ -369,6 +369,78 @@ button {
   }
 }
 
+.trust-section {
+  padding: 4rem 0;
+  background: var(--color-bg-alt);
+  border-top: 1px solid var(--color-border);
+  border-bottom: 1px solid var(--color-border);
+}
+
+.trust-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 2rem;
+}
+
+.trust-item {
+  text-align: center;
+  padding: 1.5rem 1rem;
+}
+
+.trust-icon {
+  width: 56px;
+  height: 56px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--color-white);
+  border: 2px solid var(--color-border);
+  border-radius: var(--radius-full);
+  margin: 0 auto 1rem;
+  transition: all var(--transition-normal);
+}
+
+.trust-item:hover .trust-icon {
+  border-color: var(--color-primary);
+  background: var(--color-primary);
+}
+
+.trust-item:hover .trust-icon svg {
+  color: var(--color-white);
+}
+
+.trust-icon svg {
+  width: 24px;
+  height: 24px;
+  color: var(--color-primary);
+  transition: color var(--transition-fast);
+}
+
+.trust-item h3 {
+  font-size: 1.0625rem;
+  font-weight: 700;
+  color: var(--color-dark);
+  margin-bottom: 0.5rem;
+}
+
+.trust-item p {
+  font-size: 0.9375rem;
+  color: var(--color-body);
+  line-height: 1.5;
+}
+
+@media (max-width: 900px) {
+  .trust-grid {
+    grid-template-columns: repeat(2, 1fr);
+  }
+}
+
+@media (max-width: 500px) {
+  .trust-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
 .services {
   padding: 5rem 0;
   background: var(--color-white);
@@ -486,6 +558,58 @@ button {
   border-radius: var(--radius-lg);
   text-align: center;
   backdrop-filter: blur(10px);
+}
+
+.cta-section {
+  padding: 4rem 0;
+  background: var(--color-white);
+}
+
+.cta-box {
+  max-width: 720px;
+  margin: 0 auto;
+  padding: 3rem;
+  background: linear-gradient(135deg, #eff6ff 0%, #dbeafe 100%);
+  border-radius: var(--radius-lg);
+  text-align: center;
+  border: 1px solid var(--color-border);
+}
+
+.cta-content h2 {
+  font-size: 1.75rem;
+  font-weight: 700;
+  color: var(--color-dark);
+  margin-bottom: 1rem;
+}
+
+.cta-content p {
+  font-size: 1.0625rem;
+  color: var(--color-body);
+  margin-bottom: 2rem;
+  line-height: 1.6;
+}
+
+.cta-buttons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1rem;
+  justify-content: center;
+}
+
+@media (max-width: 600px) {
+  .cta-box {
+    padding: 2rem 1.5rem;
+  }
+
+  .cta-buttons {
+    flex-direction: column;
+    align-items: center;
+  }
+
+  .cta-buttons .btn {
+    width: 100%;
+    max-width: 280px;
+  }
 }
 
 .subscription-icon {
