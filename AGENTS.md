@@ -199,7 +199,8 @@ try {
 ```
 /
 ├── index.html          # Main homepage
-├── support.html        # Support/tips page
+├── support.html        # Support/tips page (donations)
+├── privacy.html       # Privacy policy
 ├── style.css           # Main stylesheet
 ├── script.js           # Main JavaScript
 ├── tests.js            # Browser-based tests (commented out in production)
