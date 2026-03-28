@@ -1,88 +1,94 @@
-function displayImage(imageId, textId) {
-  // Get the target image container element
-  const targetImageContainer = document.getElementById(imageId);
-
-  if (!targetImageContainer) {
-    console.error(`Image container with ID "${imageId}" not found.`);
-    return;
-  }
-
-  // Determine if the target image container is currently visible
-  // Use getComputedStyle for a more robust check, though style.display should work if set directly.
-  const isCurrentlyVisible = targetImageContainer.style.display === 'block';
-
-  // Hide ALL image containers first
-  document.querySelectorAll('.image-container').forEach(el => {
-    el.style.display = 'none';
-  });
-
-  // If the target image container was NOT visible before we hid everything, then show it.
-  // This creates the toggle effect: if it was hidden, show it. If it was shown, it's now hidden by the loop above.
-  if (!isCurrentlyVisible) {
-    targetImageContainer.style.display = 'block';
-  }
-
-  // The textId parameter and textElement logic have been removed
-  // as the associated text paragraphs (e.g., p#paypalText, p#btcText)
-  // are styled with "display: block;" inline in index.html,
-  // meaning they are intended to be always visible and not toggled by this function.
-}
-
-function copyToClipboard(text, buttonElement) {
-  navigator.clipboard.writeText(text).then(function() {
-    const originalText = buttonElement.textContent;
-    buttonElement.textContent = 'Copied!';
-    setTimeout(function() {
-      buttonElement.textContent = originalText;
-    }, 2000); // Change back after 2 seconds
-  }, function(err) {
-    console.error('Could not copy text: ', err);
-    // Optionally, provide feedback for error
-    const originalText = buttonElement.textContent;
-    buttonElement.textContent = 'Failed!';
-    setTimeout(function() {
-      buttonElement.textContent = originalText;
-    }, 2000);
-  });
-}
-
-// Smooth scrolling for navigation links
 document.addEventListener('DOMContentLoaded', function() {
-  // Select all navigation links in the header and footer
-  // This targets links within <nav> elements and also footer links for broader coverage
-  const navLinks = document.querySelectorAll('nav ul li a[href^="#"], footer ul li a[href^="#"]');
+  const mobileMenuBtn = document.getElementById('mobileMenuBtn');
+  const navLinks = document.getElementById('navLinks');
 
-  navLinks.forEach(link => {
-    link.addEventListener('click', function(event) {
-      // Prevent the default anchor link behavior (jumping directly to the section)
-      event.preventDefault();
+  if (mobileMenuBtn && navLinks) {
+    mobileMenuBtn.addEventListener('click', function() {
+      const isExpanded = navLinks.classList.toggle('active');
+      mobileMenuBtn.setAttribute('aria-expanded', isExpanded);
+    });
 
-      // Get the target section's ID from the href attribute
-      const targetId = this.getAttribute('href');
+    navLinks.querySelectorAll('a').forEach(function(link) {
+      link.addEventListener('click', function() {
+        navLinks.classList.remove('active');
+        mobileMenuBtn.setAttribute('aria-expanded', 'false');
+      });
+    });
 
-      // Find the target element using the ID
-      // Handles cases where href might be just "#" or an invalid ID
-      let targetElement;
-      try {
-        targetElement = document.querySelector(targetId);
-      } catch (e) {
-        console.error('Invalid selector for smooth scroll:', targetId, e);
-        return; // Exit if the selector is invalid (e.g., href="#")
+    document.addEventListener('click', function(event) {
+      if (!navLinks.contains(event.target) && !mobileMenuBtn.contains(event.target)) {
+        navLinks.classList.remove('active');
+        mobileMenuBtn.setAttribute('aria-expanded', 'false');
       }
+    });
+  }
 
-
-      if (targetElement) {
-        // Calculate the position of the target element
-        const targetPosition = targetElement.offsetTop;
-
-        // Scroll smoothly to the target element
-        window.scrollTo({
-          top: targetPosition,
-          behavior: 'smooth'
-        });
-      } else {
-        console.warn('Smooth scroll target not found for ID:', targetId);
+  const navLinks2 = document.querySelectorAll('a[href^="#"]');
+  navLinks2.forEach(function(link) {
+    link.addEventListener('click', function(event) {
+      const href = this.getAttribute('href');
+      if (href === '#') return;
+      
+      const target = document.querySelector(href);
+      if (target) {
+        event.preventDefault();
+        target.scrollIntoView({ behavior: 'smooth', block: 'start' });
       }
     });
   });
 });
+
+function displayImage(imageId) {
+  const targetImageContainer = document.getElementById(imageId);
+  if (!targetImageContainer) {
+    console.error('Image container not found:', imageId);
+    return;
+  }
+
+  document.querySelectorAll('.image-container').forEach(function(el) {
+    el.classList.remove('show');
+  });
+
+  targetImageContainer.classList.add('show');
+}
+
+function copyToClipboard(text, buttonElement) {
+  if (!navigator.clipboard) {
+    const textarea = document.createElement('textarea');
+    textarea.value = text;
+    textarea.style.position = 'fixed';
+    textarea.style.opacity = '0';
+    document.body.appendChild(textarea);
+    textarea.select();
+    try {
+      document.execCommand('copy');
+      showCopyFeedback(buttonElement, 'Copied!');
+    } catch (err) {
+      showCopyFeedback(buttonElement, 'Failed!');
+    }
+    document.body.removeChild(textarea);
+    return;
+  }
+
+  navigator.clipboard.writeText(text).then(
+    function() {
+      showCopyFeedback(buttonElement, 'Copied!');
+    },
+    function(err) {
+      console.error('Copy failed:', err);
+      showCopyFeedback(buttonElement, 'Failed!');
+    }
+  );
+}
+
+function showCopyFeedback(buttonElement, message) {
+  const originalText = buttonElement.innerHTML;
+  buttonElement.innerHTML = getCheckIcon() + ' ' + message;
+  setTimeout(function() {
+    buttonElement.innerHTML = originalText;
+  }, 2000);
+}
+
+function getCheckIcon() {
+  return '<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>';
+}
