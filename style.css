@@ -111,7 +111,8 @@ button {
   font-weight: 700;
   color: var(--color-dark);
   text-align: center;
-  margin-bottom: 1rem;
+  margin-bottom: 0.75rem;
+  letter-spacing: -0.01em;
 }
 
 .section-subtitle {
@@ -120,6 +121,7 @@ button {
   text-align: center;
   max-width: 640px;
   margin: 0 auto 3rem;
+  line-height: 1.7;
 }
 
 .header {
@@ -496,6 +498,10 @@ button {
   .trust-grid {
     grid-template-columns: 1fr;
   }
+
+  .trust-item {
+    padding: 1rem;
+  }
 }
 
 .services {
@@ -505,7 +511,7 @@ button {
 
 .services-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
   gap: 1.5rem;
 }
 
@@ -837,6 +843,16 @@ button {
   gap: 1rem;
   padding: 1rem 0;
   border-bottom: 1px solid var(--color-border);
+  transition: all var(--transition-fast);
+}
+
+.contact-method:hover {
+  padding-left: 0.5rem;
+}
+
+.contact-method:hover .contact-method-content p a,
+.contact-method:hover .contact-method-content p {
+  color: var(--color-primary);
 }
 
 .contact-method:last-child {
@@ -849,9 +865,18 @@ button {
   display: flex;
   align-items: center;
   justify-content: center;
-  background: var(--color-bg);
+  background: linear-gradient(135deg, rgba(37, 99, 235, 0.1), rgba(14, 165, 233, 0.1));
   border-radius: var(--radius-md);
   flex-shrink: 0;
+  transition: all var(--transition-normal);
+}
+
+.contact-method:hover .contact-method-icon {
+  background: linear-gradient(135deg, var(--color-primary), var(--color-accent));
+}
+
+.contact-method:hover .contact-method-icon svg {
+  color: var(--color-white);
 }
 
 .contact-method-icon svg {
@@ -1051,6 +1076,10 @@ button {
 
   .footer-legal {
     justify-content: center;
+  }
+
+  .footer-links a:hover {
+    padding-left: 0;
   }
 }
 
