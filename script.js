@@ -1,10 +1,10 @@
 document.addEventListener('DOMContentLoaded', function() {
-  const revealElements = document.querySelectorAll('.service-card, .trust-item, .tip-item');
+  var revealElements = document.querySelectorAll('.service-card, .trust-item, .tip-item');
   revealElements.forEach(function(el) {
     el.classList.add('reveal');
   });
 
-  const revealObserver = new IntersectionObserver(function(entries) {
+  var revealObserver = new IntersectionObserver(function(entries) {
     entries.forEach(function(entry) {
       if (entry.isIntersecting) {
         entry.target.classList.add('visible');
@@ -17,19 +17,28 @@ document.addEventListener('DOMContentLoaded', function() {
     revealObserver.observe(el);
   });
 
-  const mobileMenuBtn = document.getElementById('mobileMenuBtn');
-  const navLinks = document.getElementById('navLinks');
+  var mobileMenuBtn = document.getElementById('mobileMenuBtn');
+  var navLinks = document.getElementById('navLinks');
 
   if (mobileMenuBtn && navLinks) {
     mobileMenuBtn.addEventListener('click', function() {
-      const isExpanded = navLinks.classList.toggle('active');
+      var isExpanded = navLinks.classList.toggle('active');
       mobileMenuBtn.setAttribute('aria-expanded', isExpanded);
+      document.body.style.overflow = isExpanded ? 'hidden' : '';
+    });
+
+    mobileMenuBtn.addEventListener('keydown', function(e) {
+      if (e.key === 'Enter' || e.key === ' ') {
+        e.preventDefault();
+        mobileMenuBtn.click();
+      }
     });
 
     navLinks.querySelectorAll('a').forEach(function(link) {
       link.addEventListener('click', function() {
         navLinks.classList.remove('active');
         mobileMenuBtn.setAttribute('aria-expanded', 'false');
+        document.body.style.overflow = '';
       });
     });
 
@@ -37,6 +46,7 @@ document.addEventListener('DOMContentLoaded', function() {
       if (!navLinks.contains(event.target) && !mobileMenuBtn.contains(event.target)) {
         navLinks.classList.remove('active');
         mobileMenuBtn.setAttribute('aria-expanded', 'false');
+        document.body.style.overflow = '';
       }
     });
   }
