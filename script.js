@@ -70,7 +70,12 @@ document.addEventListener('DOMContentLoaded', function() {
 
 function initBookingWidget() {
   var bookingWidget = document.getElementById('bookingWidget');
-  if (!bookingWidget) return;
+  if (!bookingWidget) {
+    console.log('Booking widget not found');
+    return;
+  }
+  
+  console.log('Booking widget initialized');
 
   var currentDate = new Date();
   var selectedDate = null;
@@ -117,15 +122,30 @@ function initBookingWidget() {
   });
 
   function fetchAvailability() {
+    console.log('Fetching availability...');
     fetch('/api/availability')
-      .then(function(res) { return res.json(); })
+      .then(function(res) { 
+        console.log('Availability response:', res.status);
+        return res.json(); 
+      })
       .then(function(data) {
+        console.log('Availability data:', data);
         availability = data;
         renderCalendar();
       })
       .catch(function(err) {
         console.error('Error fetching availability:', err);
+        renderCalendarFallback();
       });
+  }
+
+  function renderCalendarFallback() {
+    var today = new Date();
+    var todayStr = formatDate(today);
+    if (!availability[todayStr]) {
+      availability[todayStr] = [9, 10, 11, 12, 13, 14, 15, 16, 17];
+    }
+    renderCalendar();
   }
 
   function renderCalendar() {
