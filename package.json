@@ -1,0 +1,26 @@
+{
+  "name": "dextech",
+  "version": "1.0.0",
+  "description": "Dex Tech - Henderson NV Tech Support Website",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node server.js"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/dexsword/dextech.git"
+  },
+  "keywords": ["tech-support", "website"],
+  "author": "",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/dexsword/dextech/issues"
+  },
+  "homepage": "https://github.com/dexsword/dextech#readme",
+  "dependencies": {
+    "cors": "^2.8.6",
+    "express": "^5.2.1",
+    "nodemailer": "^8.0.4"
+  }
+}

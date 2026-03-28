@@ -4,37 +4,36 @@ This file provides guidelines for agentic coding agents working in the Dex Tech 
 
 ## Project Overview
 
-Dex Tech is a static business website (HTML/CSS/JavaScript) for a tech support company in Henderson, NV. It provides information about services, pricing, and contact options including cryptocurrency donations.
+Dex Tech is a business website with a Node.js backend for a tech support company in Henderson, NV. It provides information about services, pricing, appointment booking, and contact options including cryptocurrency donations.
 
-**Tech Stack:** Vanilla HTML5, CSS3, JavaScript (ES6+), no build system
+**Tech Stack:** HTML5, CSS3, JavaScript (ES6+), Node.js, Express
 
 ---
 
 ## Build/Lint/Test Commands
 
-### No Build System
-This is a static site with no build tools. Files are served directly.
+### Starting the Server
+```bash
+npm start
+# or
+node server.js
+```
+The server runs on http://localhost:3000
 
 ### Testing (Browser-Based)
 Tests are in `tests.js` and run in the browser console:
 
-1. Open `index.html` in a browser
-2. Open Developer Console (F12)
-3. Uncomment the test script in HTML (line 252):
-   ```html
-   <!-- Change this: -->
-   <!-- <script src="tests.js" defer></script> --!>
-   <!-- To this: -->
-   <script src="tests.js" defer></script>
-   ```
-4. Refresh page - tests run automatically on DOMContentLoaded
-5. Or paste tests.js content directly into console
-6. Call `runAllTests()` to re-run tests
+1. Start the server: `npm start`
+2. Open http://localhost:3000 in a browser
+3. Open Developer Console (F12)
+4. Uncomment the test script in HTML or paste tests.js content directly into console
+5. Call `runAllTests()` to re-run tests
 
 **Test Categories:**
 - QR code display toggle functionality
 - Copy to clipboard functionality  
 - Smooth scrolling navigation
+- Booking widget functionality
 
 ### Manual Testing Checklist
 - Open site in multiple browsers
@@ -42,7 +41,30 @@ Tests are in `tests.js` and run in the browser console:
 - Verify QR code buttons show/hide correctly
 - Test clipboard copy buttons
 - Check responsive design on mobile view
-- Verify all external links work (Stripe, Typeform)
+- Test booking widget (date selection, time slots, form submission)
+- Verify all external links work (Stripe)
+
+---
+
+## Booking System API
+
+The booking system runs on the Express server with these endpoints:
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/api/availability` | Get availability for next 14 days |
+| GET | `/api/availability/:date` | Get available slots for specific date |
+| POST | `/api/bookings` | Create new booking |
+| DELETE | `/api/bookings/:id` | Cancel a booking |
+| GET | `/api/bookings` | List all bookings (admin) |
+
+**Booking Data:** Stored in `bookings.json` (simple JSON file storage)
+
+**Email Notifications:** Configured via environment variables:
+- `SMTP_HOST` - SMTP server host
+- `SMTP_PORT` - SMTP server port
+- `SMTP_USER` - SMTP username
+- `SMTP_PASS` - SMTP password
 
 ---
 
@@ -204,6 +226,9 @@ try {
 ├── style.css           # Main stylesheet
 ├── script.js           # Main JavaScript
 ├── tests.js            # Browser-based tests (commented out in production)
+├── server.js           # Express backend server
+├── bookings.json        # Booking data storage
+├── package.json        # Node.js dependencies
 ├── favicon.png         # Site favicon
 └── *.jpg               # Image assets (QR codes, backgrounds)
 ```

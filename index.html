@@ -476,8 +476,103 @@
           </div>
 
           <div class="contact-form">
-            <div data-tf-live="01HS6PN0H03TFEEKNCB98VHH5Y"></div>
-            <script src="//embed.typeform.com/next/embed.js" defer></script>
+            <div class="booking-widget" id="bookingWidget">
+              <div class="booking-header">
+                <h3>Book an Appointment</h3>
+                <p>Select a date and time for your consultation</p>
+              </div>
+              <div class="booking-body">
+                <div class="booking-step active" id="step1">
+                  <h4><span class="step-num">1</span> Choose Date</h4>
+                  <div class="calendar-nav">
+                    <button type="button" id="prevMonth" aria-label="Previous month">
+                      <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"/></svg>
+                    </button>
+                    <span id="currentMonth"></span>
+                    <button type="button" id="nextMonth" aria-label="Next month">
+                      <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"/></svg>
+                    </button>
+                  </div>
+                  <div class="calendar-grid" id="calendarGrid">
+                    <div class="calendar-header">
+                      <span>Sun</span>
+                      <span>Mon</span>
+                      <span>Tue</span>
+                      <span>Wed</span>
+                      <span>Thu</span>
+                      <span>Fri</span>
+                      <span>Sat</span>
+                    </div>
+                    <div id="calendarDays"></div>
+                  </div>
+                </div>
+
+                <div class="booking-step" id="step2">
+                  <h4><span class="step-num">2</span> Choose Time</h4>
+                  <div class="time-slots" id="timeSlots">
+                    <div class="booking-loading"><div class="spinner"></div></div>
+                  </div>
+                  <div class="booking-nav">
+                    <button type="button" class="btn btn-secondary btn-back" id="backToDate">Back</button>
+                  </div>
+                </div>
+
+                <div class="booking-step" id="step3">
+                  <h4><span class="step-num">3</span> Your Details</h4>
+                  <form class="booking-form" id="bookingForm">
+                    <div>
+                      <label for="bookingName">Full Name</label>
+                      <input type="text" id="bookingName" name="name" required placeholder="John Smith">
+                    </div>
+                    <div>
+                      <label for="bookingEmail">Email</label>
+                      <input type="email" id="bookingEmail" name="email" required placeholder="john@example.com">
+                    </div>
+                    <div>
+                      <label for="bookingPhone">Phone</label>
+                      <input type="tel" id="bookingPhone" name="phone" required placeholder="(555) 123-4567">
+                    </div>
+                    <div>
+                      <label for="bookingService">Service Needed</label>
+                      <select id="bookingService" name="service" required>
+                        <option value="">Select a service...</option>
+                        <option value="Tech Support">Tech Support & Troubleshooting</option>
+                        <option value="Home Setup">Home & Office Setup</option>
+                        <option value="PC Build">Custom PC Build</option>
+                        <option value="PC Tune-Up">PC Tune-Up</option>
+                        <option value="Virus Removal">Virus & Junk Removal</option>
+                        <option value="Network">Network Optimization</option>
+                        <option value="Pi-hole">Pi-hole Setup</option>
+                        <option value="Home Automation">Home Automation</option>
+                        <option value="Training">Training & Guidance</option>
+                        <option value="Other">Other</option>
+                      </select>
+                    </div>
+                    <div>
+                      <label for="bookingNotes">Additional Notes (optional)</label>
+                      <textarea id="bookingNotes" name="notes" rows="3" placeholder="Describe your issue or what you need help with..."></textarea>
+                    </div>
+                    <div class="booking-error" id="bookingError" style="display: none;"></div>
+                    <div class="booking-nav">
+                      <button type="button" class="btn btn-secondary btn-back" id="backToTime">Back</button>
+                      <button type="submit" class="btn btn-primary">Book Appointment</button>
+                    </div>
+                  </form>
+                </div>
+
+                <div class="booking-step" id="step4">
+                  <div class="confirmation">
+                    <div class="confirmation-icon">
+                      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+                    </div>
+                    <h3>Appointment Confirmed!</h3>
+                    <p>We'll send you a confirmation email shortly.</p>
+                    <div class="confirmation-details" id="confirmationDetails"></div>
+                    <button type="button" class="btn btn-primary" id="bookAnother">Book Another</button>
+                  </div>
+                </div>
+              </div>
+            </div>
           </div>
         </div>
       </div>
