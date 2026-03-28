@@ -14,8 +14,9 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
 
-  <link rel="stylesheet" href="style.css">
+  <link rel="stylesheet" href="style.css" media="print" onload="this.media='all'">
   <link rel="icon" href="favicon.png" type="image/png">
+  <link rel="icon" href="favicon.png" type="image/png" sizes="32x32">
 
   <meta property="og:title" content="Dex Tech | Henderson NV Tech Support, Setup & PC Help">
   <meta property="og:description" content="Expert tech support, setup, and training services for homes and businesses in Henderson, NV.">
@@ -127,9 +128,10 @@
   </script>
 </head>
 <body>
+  <a href="#main-content" class="skip-link">Skip to main content</a>
   <header class="header" role="banner">
     <div class="header-inner">
-      <a href="#" class="logo" aria-label="Dex Tech - Home">Dex<span>.</span>Tech</a>
+      <a href="#" class="logo" aria-label="Dex Tech - Go to homepage">Dex<span>.</span>Tech</a>
       <nav class="nav-links" id="navLinks" role="navigation" aria-label="Main navigation">
         <a href="#services">Services</a>
         <a href="#subscription">Plans</a>
@@ -151,7 +153,7 @@
     </div>
   </header>
 
-  <main>
+  <main id="main-content">
     <section class="hero" id="home">
       <div class="container">
         <div class="hero-content">
@@ -486,7 +488,7 @@
     <div class="container">
       <div class="footer-grid">
         <div class="footer-brand">
-          <p class="footer-logo">Dex<span>.</span>Tech</p>
+          <p class="footer-logo" aria-label="Dex Tech">Dex<span>.</span>Tech</p>
           <p>Expert technology solutions for homes and businesses in Henderson, NV. Quality service, honest pricing.</p>
         </div>
         <div>
@@ -508,11 +510,11 @@
       </div>
       <div class="footer-bottom">
         <p>&copy; 2025 Dex Tech. All rights reserved.</p>
-        <div class="footer-legal">
+        <nav class="footer-legal" aria-label="Legal">
           <a href="privacy.html">Privacy Policy</a>
-        </div>
+        </nav>
         <div class="footer-social">
-          <a href="https://github.com/yourusername" target="_blank" rel="noopener noreferrer" aria-label="GitHub">
+          <a href="https://github.com/yourusername" target="_blank" rel="noopener noreferrer" aria-label="Visit Dex Tech on GitHub">
             <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
               <path d="M9 19c-5 1.5-5-2.5-7-3m14 6v-3.87a3.37 3.37 0 0 0-.94-2.61c3.14-.35 6.44-1.54 6.44-7A5.44 5.44 0 0 0 20 4.77 5.07 5.07 0 0 0 19.91 1S18.73.65 16 2.48a13.38 13.38 0 0 0-7 0C6.27.65 5.09 1 5.09 1A5.07 5.07 0 0 0 5 4.77a5.44 5.44 0 0 0-1.5 3.78c0 5.42 3.3 6.61 6.44 7A3.37 3.37 0 0 0 9 18.13V22"/>
             </svg>
