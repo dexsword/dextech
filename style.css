@@ -557,8 +557,8 @@ button {
 }
 
 .service-icon {
-  width: 48px;
-  height: 48px;
+  width: 44px;
+  height: 44px;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -566,16 +566,17 @@ button {
   border-radius: var(--radius-md);
   margin-bottom: 1.25rem;
   transition: transform 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  flex-shrink: 0;
 }
 
 .service-icon svg {
-  width: 24px;
-  height: 24px;
+  width: 22px;
+  height: 22px;
   color: var(--color-white);
 }
 
 .service-title {
-  font-size: 1.25rem;
+  font-size: 1.125rem;
   font-weight: 700;
   color: var(--color-dark);
   margin-bottom: 0.75rem;
@@ -592,6 +593,7 @@ button {
 .service-description {
   color: var(--color-body);
   line-height: 1.6;
+  font-size: 0.9375rem;
 }
 
 .service-price {
