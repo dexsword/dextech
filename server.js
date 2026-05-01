@@ -1,184 +1,564 @@
+require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
+const helmet = require('helmet');
+const rateLimit = require('express-rate-limit');
 const nodemailer = require('nodemailer');
-const fs = require('fs');
+const twilio = require('twilio');
+const Database = require('better-sqlite3');
 const path = require('path');
+const { randomUUID } = require('crypto');
 
-const app = express();
+// ─── Environment validation ───────────────────────────────────────────────────
+const REQUIRED_FOR_EMAIL = ['SMTP_HOST', 'SMTP_USER', 'SMTP_PASS'];
+const EMAIL_ENABLED = REQUIRED_FOR_EMAIL.every(k => process.env[k]);
+if (!EMAIL_ENABLED) {
+  console.warn('[warn] Email disabled — set SMTP_HOST, SMTP_USER, SMTP_PASS to enable confirmations');
+}
+
+const REQUIRED_FOR_SMS = ['TWILIO_ACCOUNT_SID', 'TWILIO_AUTH_TOKEN', 'TWILIO_FROM'];
+const SMS_ENABLED = REQUIRED_FOR_SMS.every(k => process.env[k]);
+if (!SMS_ENABLED) {
+  console.warn('[warn] SMS disabled — set TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_FROM to enable');
+}
+
+const ADMIN_TOKEN = process.env.ADMIN_TOKEN;
+if (!ADMIN_TOKEN) {
+  console.warn('[warn] ADMIN_TOKEN not set — admin endpoints will be inaccessible');
+}
+
 const PORT = process.env.PORT || 3000;
-const BOOKINGS_FILE = path.join(__dirname, 'bookings.json');
-
-app.use(cors());
-app.use(express.json());
-app.use(express.static(__dirname));
-
+const BOOKING_HORIZON_DAYS = 14;
 const HOURS = [9, 10, 11, 12, 13, 14, 15, 16, 17];
-const SLOT_DURATION = 60;
+const VALID_SERVICES = new Set([
+  'Home & Office Setup',
+  'Tech Support & Troubleshooting',
+  'Custom PC Build',
+  'PC Tune-Up',
+  'Virus & Junk Removal',
+  'Network Optimization',
+  'Pi-hole Setup',
+  'Home Automation',
+  'Training & Guidance',
+  'Other',
+]);
 
-function loadBookings() {
+// ─── Database setup ───────────────────────────────────────────────────────────
+const db = new Database(path.join(__dirname, 'bookings.db'));
+db.pragma('journal_mode = WAL');
+db.pragma('foreign_keys = ON');
+
+db.exec(`
+  CREATE TABLE IF NOT EXISTS bookings (
+    id         TEXT PRIMARY KEY,
+    name       TEXT NOT NULL,
+    email      TEXT NOT NULL,
+    phone      TEXT NOT NULL,
+    date       TEXT NOT NULL,
+    hour       INTEGER NOT NULL,
+    service    TEXT NOT NULL,
+    notes      TEXT NOT NULL DEFAULT '',
+    status     TEXT NOT NULL DEFAULT 'confirmed',
+    created_at TEXT NOT NULL,
+    UNIQUE(date, hour, status) -- enforced via check in app layer
+  );
+  CREATE INDEX IF NOT EXISTS idx_bookings_date ON bookings(date);
+  CREATE INDEX IF NOT EXISTS idx_bookings_status ON bookings(status);
+`);
+
+// Migrate existing bookings.json if present
+const fs = require('fs');
+const LEGACY_FILE = path.join(__dirname, 'bookings.json');
+if (fs.existsSync(LEGACY_FILE)) {
   try {
-    if (fs.existsSync(BOOKINGS_FILE)) {
-      const data = fs.readFileSync(BOOKINGS_FILE, 'utf8');
-      return JSON.parse(data);
+    const legacy = JSON.parse(fs.readFileSync(LEGACY_FILE, 'utf8'));
+    if (Array.isArray(legacy.bookings) && legacy.bookings.length > 0) {
+      const insert = db.prepare(
+        `INSERT OR IGNORE INTO bookings (id, name, email, phone, date, hour, service, notes, status, created_at)
+         VALUES (@id, @name, @email, @phone, @date, @hour, @service, @notes, @status, @created_at)`
+      );
+      const migrate = db.transaction((bookings) => {
+        for (const b of bookings) {
+          insert.run({
+            id: b.id || randomUUID(),
+            name: b.name || '',
+            email: b.email || '',
+            phone: b.phone || '',
+            date: b.date || '',
+            hour: Number(b.hour),
+            service: b.service || '',
+            notes: b.notes || '',
+            status: b.status || 'confirmed',
+            created_at: b.createdAt || new Date().toISOString(),
+          });
+        }
+      });
+      migrate(legacy.bookings);
+      fs.renameSync(LEGACY_FILE, LEGACY_FILE + '.migrated');
+      console.log(`[info] Migrated ${legacy.bookings.length} bookings from bookings.json`);
     }
   } catch (err) {
-    console.error('Error loading bookings:', err);
-  }
-  return { bookings: [] };
-}
-
-function saveBookings(data) {
-  try {
-    fs.writeFileSync(BOOKINGS_FILE, JSON.stringify(data, null, 2));
-    return true;
-  } catch (err) {
-    console.error('Error saving bookings:', err);
-    return false;
+    console.error('[error] Migration failed:', err.message);
   }
 }
 
-function isSlotAvailable(date, hour) {
-  const data = loadBookings();
-  const dateStr = date;
-  return !data.bookings.some(b => b.date === dateStr && b.hour === hour && b.status !== 'cancelled');
-}
+// ─── Prepared statements ──────────────────────────────────────────────────────
+const stmtInsert = db.prepare(
+  `INSERT INTO bookings (id, name, email, phone, date, hour, service, notes, status, created_at)
+   VALUES (@id, @name, @email, @phone, @date, @hour, @service, @notes, 'confirmed', @created_at)`
+);
+const stmtCancel = db.prepare(
+  `UPDATE bookings SET status = 'cancelled' WHERE id = ? AND status != 'cancelled'`
+);
+const stmtIsBooked = db.prepare(
+  `SELECT 1 FROM bookings WHERE date = ? AND hour = ? AND status = 'confirmed' LIMIT 1`
+);
+const stmtSlotsByDate = db.prepare(
+  `SELECT hour FROM bookings WHERE date = ? AND status = 'confirmed'`
+);
+const stmtAll = db.prepare(
+  `SELECT * FROM bookings ORDER BY date ASC, hour ASC`
+);
+const stmtByStatus = db.prepare(
+  `SELECT * FROM bookings WHERE status = ? ORDER BY date ASC, hour ASC`
+);
+const stmtById = db.prepare(`SELECT * FROM bookings WHERE id = ?`);
 
-function getAvailableSlots(date) {
-  return HOURS.filter(hour => isSlotAvailable(date, hour));
-}
+// ─── Express app ──────────────────────────────────────────────────────────────
+const app = express();
 
-app.get('/api/availability/:date', (req, res) => {
-  const { date } = req.params;
-  const slots = getAvailableSlots(date);
-  res.json({ date, available: slots });
+app.use(helmet({
+  contentSecurityPolicy: {
+    directives: {
+      defaultSrc: ["'self'"],
+      scriptSrc: ["'self'", "'unsafe-inline'"],
+      styleSrc: ["'self'", "'unsafe-inline'"],
+      imgSrc: ["'self'", 'data:'],
+      connectSrc: ["'self'"],
+      fontSrc: ["'self'"],
+      objectSrc: ["'none'"],
+      upgradeInsecureRequests: [],
+    },
+  },
+}));
+
+const allowedOrigins = process.env.ALLOWED_ORIGINS
+  ? process.env.ALLOWED_ORIGINS.split(',').map(o => o.trim())
+  : null;
+
+app.use(cors({
+  origin: allowedOrigins || true,
+  methods: ['GET', 'POST', 'DELETE'],
+  allowedHeaders: ['Content-Type', 'Authorization'],
+}));
+
+app.use(express.json({ limit: '16kb' }));
+
+// ─── Rate limiting ────────────────────────────────────────────────────────────
+const bookingLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 10,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Too many booking attempts. Please try again later.' },
 });
 
-app.get('/api/availability', (req, res) => {
-  const today = new Date();
-  const availability = {};
-  
-  for (let i = 0; i < 14; i++) {
-    const date = new Date(today);
-    date.setDate(today.getDate() + i);
-    const dateStr = date.toISOString().split('T')[0];
-    
-    if (date.getDay() !== 0) {
-      availability[dateStr] = getAvailableSlots(dateStr);
+const apiLimiter = rateLimit({
+  windowMs: 1 * 60 * 1000,
+  max: 120,
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+
+app.use('/api/', apiLimiter);
+
+// ─── Request logging ──────────────────────────────────────────────────────────
+app.use((req, _res, next) => {
+  const start = Date.now();
+  _res.on('finish', () => {
+    const duration = Date.now() - start;
+    const ip = req.ip || req.socket?.remoteAddress;
+    console.log(`[${new Date().toISOString()}] ${req.method} ${req.path} ${_res.statusCode} ${duration}ms ip=${ip}`);
+  });
+  next();
+});
+
+// ─── Admin auth middleware ────────────────────────────────────────────────────
+function requireAdmin(req, res, next) {
+  if (!ADMIN_TOKEN) {
+    return res.status(503).json({ error: 'Admin access not configured' });
+  }
+  const auth = req.headers['authorization'];
+  const token = auth?.startsWith('Bearer ') ? auth.slice(7) : req.query.token;
+  if (!token || token !== ADMIN_TOKEN) {
+    return res.status(401).json({ error: 'Unauthorized' });
+  }
+  next();
+}
+
+// ─── Validation helpers ───────────────────────────────────────────────────────
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+const PHONE_RE = /^[\d\s\-()+.]{7,20}$/;
+const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+
+function validateBookingInput({ name, email, phone, date, hour, service, notes }) {
+  const errors = [];
+
+  if (!name || typeof name !== 'string' || name.trim().length < 2 || name.trim().length > 100) {
+    errors.push('Name must be 2–100 characters');
+  }
+  if (!email || !EMAIL_RE.test(email.trim())) {
+    errors.push('Valid email address required');
+  }
+  if (!phone || !PHONE_RE.test(phone.trim())) {
+    errors.push('Valid phone number required (7–20 digits)');
+  }
+  if (!date || !DATE_RE.test(date)) {
+    errors.push('Date must be YYYY-MM-DD format');
+  } else {
+    const d = new Date(date + 'T00:00:00');
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const maxDate = new Date(today);
+    maxDate.setDate(today.getDate() + BOOKING_HORIZON_DAYS);
+    if (isNaN(d.getTime())) {
+      errors.push('Invalid date');
+    } else if (d < today) {
+      errors.push('Cannot book a date in the past');
+    } else if (d > maxDate) {
+      errors.push(`Cannot book more than ${BOOKING_HORIZON_DAYS} days ahead`);
+    } else if (d.getDay() === 0) {
+      errors.push('Sundays are not available');
     }
   }
-  
+  const hourNum = parseInt(hour, 10);
+  if (isNaN(hourNum) || !HOURS.includes(hourNum)) {
+    errors.push(`Hour must be one of: ${HOURS.join(', ')}`);
+  }
+  if (!service || !VALID_SERVICES.has(service.trim())) {
+    errors.push('Please select a valid service');
+  }
+  if (notes && notes.length > 1000) {
+    errors.push('Notes must be under 1000 characters');
+  }
+
+  return errors;
+}
+
+// ─── Availability helpers ─────────────────────────────────────────────────────
+function getBookedHours(dateStr) {
+  return new Set(stmtSlotsByDate.all(dateStr).map(r => r.hour));
+}
+
+function getAvailableSlots(dateStr) {
+  const booked = getBookedHours(dateStr);
+  return HOURS.filter(h => !booked.has(h));
+}
+
+// ─── Routes ───────────────────────────────────────────────────────────────────
+
+app.get('/health', (_req, res) => {
+  const bookingCount = db.prepare("SELECT COUNT(*) as n FROM bookings WHERE status = 'confirmed'").get();
+  res.json({
+    status: 'ok',
+    timestamp: new Date().toISOString(),
+    confirmed_bookings: bookingCount.n,
+    email_enabled: EMAIL_ENABLED,
+  });
+});
+
+app.get('/api/availability', (_req, res) => {
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const availability = {};
+
+  for (let i = 0; i < BOOKING_HORIZON_DAYS; i++) {
+    const d = new Date(today);
+    d.setDate(today.getDate() + i);
+    if (d.getDay() === 0) continue;
+    const dateStr = formatDate(d);
+    availability[dateStr] = getAvailableSlots(dateStr);
+  }
+
   res.json(availability);
 });
 
-app.post('/api/bookings', (req, res) => {
-  const { name, email, phone, date, hour, service, notes } = req.body;
-  
-  if (!name || !email || !phone || !date || !hour || !service) {
-    return res.status(400).json({ error: 'Missing required fields' });
+app.get('/api/availability/:date', (req, res) => {
+  const { date } = req.params;
+  if (!DATE_RE.test(date)) {
+    return res.status(400).json({ error: 'Invalid date format' });
   }
-  
-  if (!isSlotAvailable(date, hour)) {
-    return res.status(409).json({ error: 'This time slot is no longer available' });
-  }
-  
-  const booking = {
-    id: Date.now().toString(),
-    name,
-    email,
-    phone,
-    date,
-    hour,
-    service,
-    notes: notes || '',
-    status: 'confirmed',
-    createdAt: new Date().toISOString()
-  };
-  
-  const data = loadBookings();
-  data.bookings.push(booking);
-  
-  if (saveBookings(data)) {
-    sendConfirmationEmail(booking);
-    res.status(201).json({ success: true, booking });
-  } else {
-    res.status(500).json({ error: 'Failed to save booking' });
-  }
+  res.json({ date, available: getAvailableSlots(date) });
 });
 
-app.delete('/api/bookings/:id', (req, res) => {
+app.post('/api/bookings', bookingLimiter, (req, res) => {
+  const { name, email, phone, date, hour, service, notes } = req.body;
+
+  const errors = validateBookingInput({ name, email, phone, date, hour, service, notes });
+  if (errors.length > 0) {
+    return res.status(422).json({ error: errors[0], errors });
+  }
+
+  const hourNum = parseInt(hour, 10);
+  const cleanName = name.trim();
+  const cleanEmail = email.trim().toLowerCase();
+  const cleanPhone = phone.trim();
+  const cleanService = service.trim();
+  const cleanNotes = (notes || '').trim();
+
+  // Atomic check-and-insert using SQLite's exclusive write lock
+  const book = db.transaction(() => {
+    const taken = stmtIsBooked.get(date, hourNum);
+    if (taken) return null;
+
+    const booking = {
+      id: randomUUID(),
+      name: cleanName,
+      email: cleanEmail,
+      phone: cleanPhone,
+      date,
+      hour: hourNum,
+      service: cleanService,
+      notes: cleanNotes,
+      created_at: new Date().toISOString(),
+    };
+    stmtInsert.run(booking);
+    return booking;
+  });
+
+  const booking = book();
+  if (!booking) {
+    return res.status(409).json({ error: 'This time slot was just taken. Please choose another.' });
+  }
+
+  // Fire-and-forget notifications (don't hold the response)
+  sendConfirmationEmail(booking).catch(err =>
+    console.error('[error] Confirmation email failed:', err.message)
+  );
+  sendSmsNotifications(booking).catch(err =>
+    console.error('[error] SMS notification failed:', err.message)
+  );
+
+  res.status(201).json({
+    success: true,
+    bookingId: booking.id,
+    message: 'Booking confirmed! You will receive an SMS confirmation shortly.',
+  });
+});
+
+// ─── Admin-only routes ────────────────────────────────────────────────────────
+
+app.get('/api/bookings', requireAdmin, (req, res) => {
+  const { status } = req.query;
+  const rows = status ? stmtByStatus.all(status) : stmtAll.all();
+  res.json(rows.map(rowToBooking));
+});
+
+app.post('/api/bookings/:id/cancel', requireAdmin, (req, res) => {
   const { id } = req.params;
-  const data = loadBookings();
-  const index = data.bookings.findIndex(b => b.id === id);
-  
-  if (index === -1) {
+  const booking = stmtById.get(id);
+  if (!booking) {
     return res.status(404).json({ error: 'Booking not found' });
   }
-  
-  data.bookings[index].status = 'cancelled';
-  
-  if (saveBookings(data)) {
-    res.json({ success: true });
-  } else {
-    res.status(500).json({ error: 'Failed to cancel booking' });
+  if (booking.status === 'cancelled') {
+    return res.status(409).json({ error: 'Booking already cancelled' });
   }
+  const result = stmtCancel.run(id);
+  if (result.changes === 0) {
+    return res.status(500).json({ error: 'Cancel failed' });
+  }
+  res.json({ success: true });
 });
 
-app.get('/api/bookings', (req, res) => {
-  const data = loadBookings();
-  res.json(data.bookings);
+// ─── Static files ─────────────────────────────────────────────────────────────
+app.use(express.static(__dirname));
+
+app.get('/', (_req, res) => res.sendFile(path.join(__dirname, 'index.html')));
+app.get('/admin', (_req, res) => {
+  res.setHeader('Cache-Control', 'no-store');
+  res.sendFile(path.join(__dirname, 'admin.html'));
 });
 
-async function sendConfirmationEmail(booking) {
-  const transporter = nodemailer.createTransport({
-    host: process.env.SMTP_HOST || 'smtp.example.com',
-    port: process.env.SMTP_PORT || 587,
-    secure: false,
-    auth: {
-      user: process.env.SMTP_USER,
-      pass: process.env.SMTP_PASS
-    }
-  });
-  
-  const formattedDate = new Date(booking.date + 'T00:00:00').toLocaleDateString('en-US', {
-    weekday: 'long',
-    year: 'numeric',
-    month: 'long',
-    day: 'numeric'
-  });
-  
-  const timeStr = `${booking.hour}:00 ${booking.hour >= 12 ? 'PM' : 'AM'}`;
-  
-  const mailOptions = {
-    from: '"Dex Tech" <bookings@dextech.cloud>',
-    to: booking.email,
-    subject: 'Appointment Confirmed - Dex Tech',
-    html: `
-      <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
-        <h2 style="color: #2563eb;">Your Appointment is Confirmed</h2>
-        <p>Hi ${booking.name},</p>
-        <p>Your appointment with Dex Tech has been scheduled.</p>
-        <div style="background: #f8fafc; padding: 20px; border-radius: 8px; margin: 20px 0;">
-          <p><strong>Date:</strong> ${formattedDate}</p>
-          <p><strong>Time:</strong> ${timeStr}</p>
-          <p><strong>Service:</strong> ${booking.service}</p>
-        </div>
-        <p>If you need to reschedule or cancel, please reply to this email or call (845) 596-1708.</p>
-        <p>See you soon!</p>
-      </div>
-    `
-  };
-  
-  try {
-    await transporter.sendMail(mailOptions);
-  } catch (err) {
-    console.error('Email error:', err);
-  }
+// ─── Global error handler ─────────────────────────────────────────────────────
+app.use((err, _req, res, _next) => {
+  console.error('[error]', err);
+  res.status(500).json({ error: 'Internal server error' });
+});
+
+// ─── Email ────────────────────────────────────────────────────────────────────
+function formatTimeStr(hour) {
+  const suffix = hour >= 12 ? 'PM' : 'AM';
+  const h = hour > 12 ? hour - 12 : (hour === 0 ? 12 : hour);
+  return `${h}:00 ${suffix}`;
 }
 
-app.get('/', (req, res) => {
-  res.sendFile(path.join(__dirname, 'index.html'));
+function formatDate(d) {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+}
+
+function buildICS(booking) {
+  const d = booking.date.replace(/-/g, '');
+  const startH = String(booking.hour).padStart(2, '0');
+  const endH = String(booking.hour + 1).padStart(2, '0');
+  const now = new Date().toISOString().replace(/[-:.]/g, '').slice(0, 15) + 'Z';
+  return [
+    'BEGIN:VCALENDAR',
+    'VERSION:2.0',
+    'PRODID:-//Dex Tech//Booking//EN',
+    'BEGIN:VEVENT',
+    `UID:${booking.id}@dextech.cloud`,
+    `DTSTAMP:${now}`,
+    `DTSTART:${d}T${startH}0000`,
+    `DTEND:${d}T${endH}0000`,
+    `SUMMARY:Dex Tech – ${booking.service}`,
+    `DESCRIPTION:Tech support appointment with Dex Tech.`,
+    'END:VEVENT',
+    'END:VCALENDAR',
+  ].join('\r\n');
+}
+
+async function sendConfirmationEmail(booking) {
+  if (!EMAIL_ENABLED) return;
+
+  const transporter = nodemailer.createTransport({
+    host: process.env.SMTP_HOST,
+    port: parseInt(process.env.SMTP_PORT || '587', 10),
+    secure: process.env.SMTP_SECURE === 'true',
+    auth: {
+      user: process.env.SMTP_USER,
+      pass: process.env.SMTP_PASS,
+    },
+  });
+
+  const formattedDate = new Date(booking.date + 'T00:00:00').toLocaleDateString('en-US', {
+    weekday: 'long', year: 'numeric', month: 'long', day: 'numeric',
+  });
+  const timeStr = formatTimeStr(booking.hour);
+  const fromAddress = process.env.EMAIL_FROM || `"Dex Tech" <bookings@dextech.cloud>`;
+
+  await transporter.sendMail({
+    from: fromAddress,
+    to: booking.email,
+    subject: 'Appointment Confirmed – Dex Tech',
+    attachments: [{
+      filename: 'appointment.ics',
+      content: buildICS(booking),
+      contentType: 'text/calendar',
+    }],
+    html: `
+      <div style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto;color:#1e293b">
+        <div style="background:#2563eb;padding:24px 32px;border-radius:8px 8px 0 0">
+          <h2 style="color:#fff;margin:0">Appointment Confirmed ✓</h2>
+        </div>
+        <div style="background:#f8fafc;padding:32px;border-radius:0 0 8px 8px">
+          <p>Hi ${escapeHtml(booking.name)},</p>
+          <p>Your appointment with <strong>Dex Tech</strong> is confirmed.</p>
+          <table style="border-collapse:collapse;width:100%;margin:20px 0">
+            <tr><td style="padding:8px 12px;background:#e2e8f0;font-weight:bold;width:130px;border-radius:4px">Date</td><td style="padding:8px 12px">${formattedDate}</td></tr>
+            <tr><td style="padding:8px 12px;font-weight:bold">Time</td><td style="padding:8px 12px">${timeStr}</td></tr>
+            <tr><td style="padding:8px 12px;background:#e2e8f0;font-weight:bold;border-radius:4px">Service</td><td style="padding:8px 12px;background:#e2e8f0">${escapeHtml(booking.service)}</td></tr>
+            <tr><td style="padding:8px 12px;font-weight:bold">Booking ID</td><td style="padding:8px 12px;font-family:monospace;font-size:13px">${booking.id}</td></tr>
+          </table>
+          ${booking.notes ? `<p><strong>Notes:</strong> ${escapeHtml(booking.notes)}</p>` : ''}
+          <p>A calendar invite is attached. To reschedule or cancel, reply to this email or call <strong>(845) 596-1708</strong>.</p>
+          <p style="color:#64748b;font-size:13px">See you soon!<br>— Dex Tech</p>
+        </div>
+      </div>`,
+    text: `Appointment Confirmed – Dex Tech\n\nHi ${booking.name},\n\nYour appointment is confirmed:\n  Date: ${formattedDate}\n  Time: ${timeStr}\n  Service: ${booking.service}\n  Booking ID: ${booking.id}\n\nTo reschedule or cancel, reply to this email or call (845) 596-1708.\n\nSee you soon!\n— Dex Tech`,
+  });
+
+  console.log(`[info] Confirmation sent to ${booking.email} for booking ${booking.id}`);
+}
+
+function escapeHtml(str) {
+  return String(str)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#039;');
+}
+
+function rowToBooking(row) {
+  return {
+    id: row.id,
+    name: row.name,
+    email: row.email,
+    phone: row.phone,
+    date: row.date,
+    hour: row.hour,
+    service: row.service,
+    notes: row.notes,
+    status: row.status,
+    createdAt: row.created_at,
+  };
+}
+
+// ─── SMS ──────────────────────────────────────────────────────────────────────
+function toE164(phone) {
+  const digits = phone.replace(/\D/g, '');
+  if (digits.length === 10) return `+1${digits}`;
+  if (digits.length === 11 && digits[0] === '1') return `+${digits}`;
+  return null;
+}
+
+async function sendSmsNotifications(booking) {
+  if (!SMS_ENABLED) return;
+
+  const client = twilio(process.env.TWILIO_ACCOUNT_SID, process.env.TWILIO_AUTH_TOKEN);
+  const formattedDate = new Date(booking.date + 'T00:00:00').toLocaleDateString('en-US', {
+    weekday: 'long', month: 'long', day: 'numeric',
+  });
+  const timeStr = formatTimeStr(booking.hour);
+  const from = process.env.TWILIO_FROM;
+
+  const customerTo = toE164(booking.phone);
+  const adminTo = process.env.ADMIN_PHONE ? toE164(process.env.ADMIN_PHONE) : null;
+
+  const sends = [];
+
+  if (customerTo) {
+    sends.push(
+      client.messages.create({
+        from,
+        to: customerTo,
+        body: `Your appointment with Dex Tech is confirmed for ${formattedDate} at ${timeStr}. Questions? Call/text (845) 596-1708. Reply STOP to opt out.`,
+      }).then(msg => console.log(`[info] Customer SMS sent to ${customerTo} sid=${msg.sid}`))
+        .catch(err => console.error(`[error] Customer SMS failed (${err.code}): ${err.message}`))
+    );
+  } else {
+    console.warn(`[warn] Could not parse customer phone for SMS: ${booking.phone}`);
+  }
+
+  if (adminTo) {
+    sends.push(
+      client.messages.create({
+        from,
+        to: adminTo,
+        body: `New booking: ${booking.name} — ${booking.service} on ${formattedDate} at ${timeStr}. Phone: ${booking.phone}.`,
+      }).then(msg => console.log(`[info] Admin SMS sent sid=${msg.sid}`))
+        .catch(err => console.error(`[error] Admin SMS failed (${err.code}): ${err.message}`))
+    );
+  }
+
+  await Promise.all(sends);
+}
+
+// ─── Start ────────────────────────────────────────────────────────────────────
+const server = app.listen(PORT, () => {
+  console.log(`[info] Dex Tech server running on port ${PORT}`);
+  console.log(`[info] Email confirmations: ${EMAIL_ENABLED ? 'enabled' : 'disabled'}`);
+  console.log(`[info] SMS notifications: ${SMS_ENABLED ? 'enabled' : 'disabled'}`);
+  console.log(`[info] Admin panel: ${ADMIN_TOKEN ? '/admin' : 'disabled (set ADMIN_TOKEN)'}`);
 });
 
-app.listen(PORT, () => {
-  console.log(`Server running at http://localhost:${PORT}`);
+process.on('SIGTERM', () => {
+  console.log('[info] SIGTERM received — shutting down gracefully');
+  server.close(() => { db.close(); process.exit(0); });
+});
+process.on('SIGINT', () => {
+  server.close(() => { db.close(); process.exit(0); });
 });

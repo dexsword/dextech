@@ -265,19 +265,38 @@ function initBookingWidget() {
     if (step === 4) step4.classList.add('active');
   }
 
+  function validateForm(name, email, phone, service) {
+    var emailRe = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    var phoneRe = /^[\d\s\-()+.]{7,20}$/;
+    if (!name || name.trim().length < 2) return 'Please enter your full name.';
+    if (!email || !emailRe.test(email.trim())) return 'Please enter a valid email address.';
+    if (!phone || !phoneRe.test(phone.trim())) return 'Please enter a valid phone number.';
+    if (!service) return 'Please select a service.';
+    if (!selectedDate) return 'Please select a date.';
+    if (selectedTime === null || selectedTime === undefined) return 'Please select a time slot.';
+    return null;
+  }
+
   function submitBooking() {
     var name = document.getElementById('bookingName').value;
     var email = document.getElementById('bookingEmail').value;
     var phone = document.getElementById('bookingPhone').value;
     var service = document.getElementById('bookingService').value;
     var notes = document.getElementById('bookingNotes').value;
-    
+
     bookingError.style.display = 'none';
-    
+
+    var validationError = validateForm(name, email, phone, service);
+    if (validationError) {
+      bookingError.textContent = validationError;
+      bookingError.style.display = 'block';
+      return;
+    }
+
     var submitBtn = bookingForm.querySelector('button[type="submit"]');
     submitBtn.disabled = true;
-    submitBtn.textContent = 'Booking...';
-    
+    submitBtn.textContent = 'Booking…';
+
     fetch('/api/bookings', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -292,15 +311,14 @@ function initBookingWidget() {
       })
     })
     .then(function(res) {
-      if (!res.ok) {
-        return res.json().then(function(data) {
-          throw new Error(data.error || 'Booking failed');
-        });
-      }
-      return res.json();
+      return res.json().then(function(data) {
+        if (!res.ok) throw new Error(data.error || 'Booking failed. Please try again.');
+        return data;
+      });
     })
     .then(function(data) {
-      showConfirmation(name, email, selectedDate, selectedTime, service);
+      showConfirmation(name, email, selectedDate, selectedTime, service, data.bookingId);
+      fetchAvailability();
       showStep(4);
     })
     .catch(function(err) {
@@ -311,21 +329,28 @@ function initBookingWidget() {
     });
   }
 
-  function showConfirmation(name, email, date, time, service) {
+  function showConfirmation(name, email, date, time, service, bookingId) {
     var details = document.getElementById('confirmationDetails');
     var formattedDate = new Date(date + 'T00:00:00').toLocaleDateString('en-US', {
-      weekday: 'long',
-      year: 'numeric',
-      month: 'long',
-      day: 'numeric'
+      weekday: 'long', year: 'numeric', month: 'long', day: 'numeric'
     });
-    
-    details.innerHTML = 
-      '<p><strong>Name:</strong> ' + name + '</p>' +
-      '<p><strong>Email:</strong> ' + email + '</p>' +
-      '<p><strong>Date:</strong> ' + formattedDate + '</p>' +
-      '<p><strong>Time:</strong> ' + formatTime(time) + '</p>' +
-      '<p><strong>Service:</strong> ' + service + '</p>';
+
+    function setText(label, value) {
+      var p = document.createElement('p');
+      var strong = document.createElement('strong');
+      strong.textContent = label + ': ';
+      p.appendChild(strong);
+      p.appendChild(document.createTextNode(value));
+      return p;
+    }
+
+    details.innerHTML = '';
+    details.appendChild(setText('Name', name));
+    details.appendChild(setText('Email', email));
+    details.appendChild(setText('Date', formattedDate));
+    details.appendChild(setText('Time', formatTime(time)));
+    details.appendChild(setText('Service', service));
+    if (bookingId) details.appendChild(setText('Booking ID', bookingId));
   }
 
   function resetBooking() {

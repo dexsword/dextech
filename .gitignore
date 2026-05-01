@@ -1,5 +1,9 @@
 node_modules/
 bookings.json
+bookings.json.migrated
+bookings.db
+bookings.db-wal
+bookings.db-shm
 *.log
 .env
 .DS_Store

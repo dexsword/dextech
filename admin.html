@@ -1,0 +1,393 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Dex Tech – Admin</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: system-ui, -apple-system, sans-serif; background: #0f172a; color: #e2e8f0; min-height: 100vh; }
+
+    /* Login */
+    #loginScreen {
+      display: flex; align-items: center; justify-content: center; min-height: 100vh;
+    }
+    .login-card {
+      background: #1e293b; border-radius: 12px; padding: 40px; width: 360px;
+      box-shadow: 0 20px 60px rgba(0,0,0,.5);
+    }
+    .login-card h1 { font-size: 1.4rem; margin-bottom: 8px; color: #f8fafc; }
+    .login-card p { color: #94a3b8; font-size: .875rem; margin-bottom: 24px; }
+    .login-card label { display: block; font-size: .8rem; color: #94a3b8; margin-bottom: 6px; text-transform: uppercase; letter-spacing: .05em; }
+    .login-card input {
+      width: 100%; padding: 10px 14px; background: #0f172a; border: 1px solid #334155;
+      border-radius: 6px; color: #f1f5f9; font-size: 1rem; margin-bottom: 16px;
+    }
+    .login-card input:focus { outline: none; border-color: #3b82f6; }
+    .btn-primary {
+      width: 100%; padding: 12px; background: #2563eb; color: #fff; border: none;
+      border-radius: 6px; font-size: 1rem; cursor: pointer; font-weight: 600;
+    }
+    .btn-primary:hover { background: #1d4ed8; }
+    .login-error { color: #f87171; font-size: .875rem; margin-top: 12px; display: none; }
+
+    /* Dashboard */
+    #dashboard { display: none; }
+    .topbar {
+      background: #1e293b; border-bottom: 1px solid #334155; padding: 16px 24px;
+      display: flex; align-items: center; justify-content: space-between;
+    }
+    .topbar h1 { font-size: 1.25rem; color: #f8fafc; }
+    .topbar-actions { display: flex; gap: 12px; align-items: center; }
+    .btn-sm {
+      padding: 6px 14px; border-radius: 6px; font-size: .875rem; cursor: pointer;
+      border: 1px solid #334155; background: #0f172a; color: #94a3b8;
+    }
+    .btn-sm:hover { background: #1e293b; color: #f1f5f9; }
+    .btn-danger { background: #7f1d1d; border-color: #991b1b; color: #fca5a5; }
+    .btn-danger:hover { background: #991b1b; }
+
+    .content { padding: 24px; max-width: 1200px; margin: 0 auto; }
+
+    /* Stats */
+    .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 16px; margin-bottom: 24px; }
+    .stat-card { background: #1e293b; border-radius: 8px; padding: 20px; border: 1px solid #334155; }
+    .stat-card .label { font-size: .75rem; color: #64748b; text-transform: uppercase; letter-spacing: .05em; margin-bottom: 8px; }
+    .stat-card .value { font-size: 2rem; font-weight: 700; color: #f8fafc; }
+    .stat-card .value.green { color: #4ade80; }
+    .stat-card .value.amber { color: #fbbf24; }
+    .stat-card .value.red { color: #f87171; }
+
+    /* Filters */
+    .filters { display: flex; gap: 8px; margin-bottom: 16px; flex-wrap: wrap; }
+    .filter-btn {
+      padding: 6px 16px; border-radius: 20px; font-size: .875rem; cursor: pointer;
+      border: 1px solid #334155; background: transparent; color: #94a3b8;
+    }
+    .filter-btn.active { background: #2563eb; border-color: #2563eb; color: #fff; }
+    .filter-btn:hover:not(.active) { background: #1e293b; }
+
+    /* Table */
+    .table-wrap { overflow-x: auto; }
+    table { width: 100%; border-collapse: collapse; }
+    thead th {
+      padding: 12px 16px; text-align: left; font-size: .75rem; color: #64748b;
+      text-transform: uppercase; letter-spacing: .05em; border-bottom: 1px solid #334155;
+      white-space: nowrap;
+    }
+    tbody tr { border-bottom: 1px solid #1e293b; }
+    tbody tr:hover { background: #1e293b; }
+    tbody td { padding: 14px 16px; font-size: .875rem; vertical-align: top; }
+    .badge {
+      display: inline-block; padding: 2px 10px; border-radius: 20px; font-size: .75rem; font-weight: 600;
+    }
+    .badge-confirmed { background: #14532d; color: #4ade80; }
+    .badge-cancelled { background: #450a0a; color: #f87171; }
+    .text-muted { color: #64748b; font-size: .8rem; }
+    .booking-id { font-family: monospace; font-size: .75rem; color: #475569; }
+
+    .empty-state { text-align: center; padding: 60px 20px; color: #475569; }
+    .empty-state p { font-size: 1.1rem; }
+
+    .loading { text-align: center; padding: 40px; color: #64748b; }
+
+    #toastContainer { position: fixed; bottom: 24px; right: 24px; display: flex; flex-direction: column; gap: 8px; z-index: 999; }
+    .toast {
+      padding: 12px 20px; border-radius: 8px; font-size: .875rem; font-weight: 500;
+      animation: fadeIn .2s ease; max-width: 320px;
+    }
+    .toast-success { background: #14532d; color: #4ade80; border: 1px solid #166534; }
+    .toast-error { background: #450a0a; color: #f87171; border: 1px solid #7f1d1d; }
+    @keyframes fadeIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
+  </style>
+</head>
+<body>
+
+<!-- Login screen -->
+<div id="loginScreen">
+  <div class="login-card">
+    <h1>Dex Tech Admin</h1>
+    <p>Enter your admin token to access bookings.</p>
+    <form id="loginForm">
+      <label for="tokenInput">Admin Token</label>
+      <input type="password" id="tokenInput" placeholder="••••••••••••" autocomplete="current-password">
+      <button type="submit" class="btn-primary">Sign In</button>
+      <div class="login-error" id="loginError">Invalid token. Please try again.</div>
+    </form>
+  </div>
+</div>
+
+<!-- Dashboard -->
+<div id="dashboard">
+  <div class="topbar">
+    <h1>Dex Tech &mdash; Bookings</h1>
+    <div class="topbar-actions">
+      <button class="btn-sm" id="refreshBtn">↻ Refresh</button>
+      <button class="btn-sm" id="signOutBtn">Sign out</button>
+    </div>
+  </div>
+
+  <div class="content">
+    <div class="stats" id="stats"></div>
+
+    <div class="filters" id="filters">
+      <button class="filter-btn active" data-status="all">All</button>
+      <button class="filter-btn" data-status="confirmed">Confirmed</button>
+      <button class="filter-btn" data-status="cancelled">Cancelled</button>
+    </div>
+
+    <div class="table-wrap">
+      <div id="tableArea" class="loading">Loading bookings…</div>
+    </div>
+  </div>
+</div>
+
+<div id="toastContainer"></div>
+
+<script>
+  const DAYS = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
+  const MONTHS = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+
+  let adminToken = sessionStorage.getItem('adminToken') || '';
+  let allBookings = [];
+  let currentFilter = 'all';
+
+  // Auto-login if token in session
+  if (adminToken) {
+    showDashboard();
+    loadBookings();
+  }
+
+  document.getElementById('loginForm').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const token = document.getElementById('tokenInput').value.trim();
+    if (!token) return;
+    try {
+      const res = await apiFetch('/api/bookings', token);
+      if (res.ok) {
+        adminToken = token;
+        sessionStorage.setItem('adminToken', token);
+        allBookings = await res.json();
+        showDashboard();
+        renderAll();
+      } else {
+        document.getElementById('loginError').style.display = 'block';
+      }
+    } catch {
+      document.getElementById('loginError').style.display = 'block';
+    }
+  });
+
+  function apiFetch(url, token, opts = {}) {
+    return fetch(url, {
+      ...opts,
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${token || adminToken}`,
+        ...(opts.headers || {}),
+      },
+    });
+  }
+
+  function showDashboard() {
+    document.getElementById('loginScreen').style.display = 'none';
+    document.getElementById('dashboard').style.display = 'block';
+  }
+
+  function signOut() {
+    sessionStorage.removeItem('adminToken');
+    adminToken = '';
+    allBookings = [];
+    document.getElementById('loginScreen').style.display = 'flex';
+    document.getElementById('dashboard').style.display = 'none';
+    document.getElementById('tokenInput').value = '';
+    document.getElementById('loginError').style.display = 'none';
+  }
+
+  async function loadBookings() {
+    document.getElementById('tableArea').innerHTML = '<div class="loading">Loading bookings…</div>';
+    try {
+      const res = await apiFetch('/api/bookings');
+      if (res.status === 401) { signOut(); return; }
+      allBookings = await res.json();
+      renderAll();
+    } catch (err) {
+      document.getElementById('tableArea').innerHTML = '<div class="empty-state"><p>Failed to load bookings.</p></div>';
+    }
+  }
+
+  document.getElementById('refreshBtn').addEventListener('click', loadBookings);
+  document.getElementById('signOutBtn').addEventListener('click', signOut);
+
+  document.getElementById('filters').addEventListener('click', (e) => {
+    const btn = e.target.closest('.filter-btn');
+    if (!btn) return;
+    currentFilter = btn.dataset.status;
+    document.querySelectorAll('.filter-btn').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    renderTable();
+  });
+
+  document.getElementById('tableArea').addEventListener('click', (e) => {
+    const btn = e.target.closest('button[data-action]');
+    if (!btn) return;
+    const wrap = btn.closest('.cancel-wrap');
+    if (!wrap) return;
+    const id = wrap.dataset.id;
+    const action = btn.dataset.action;
+    if (action === 'ask') askCancel(id);
+    else if (action === 'confirm') doCancel(id);
+    else if (action === 'reset') resetCancel(id);
+  });
+
+  function renderAll() {
+    renderStats();
+    renderTable();
+  }
+
+  function renderStats() {
+    const confirmed = allBookings.filter(b => b.status === 'confirmed').length;
+    const cancelled = allBookings.filter(b => b.status === 'cancelled').length;
+    const upcoming = allBookings.filter(b => b.status === 'confirmed' && b.date >= todayStr()).length;
+    document.getElementById('stats').innerHTML = `
+      <div class="stat-card"><div class="label">Total Bookings</div><div class="value">${allBookings.length}</div></div>
+      <div class="stat-card"><div class="label">Confirmed</div><div class="value green">${confirmed}</div></div>
+      <div class="stat-card"><div class="label">Upcoming</div><div class="value">${upcoming}</div></div>
+      <div class="stat-card"><div class="label">Cancelled</div><div class="value red">${cancelled}</div></div>
+    `;
+  }
+
+  function renderTable() {
+    const bookings = currentFilter === 'all'
+      ? allBookings
+      : allBookings.filter(b => b.status === currentFilter);
+
+    if (bookings.length === 0) {
+      document.getElementById('tableArea').innerHTML = `
+        <div class="empty-state"><p>No ${currentFilter === 'all' ? '' : currentFilter + ' '}bookings found.</p></div>`;
+      return;
+    }
+
+    // Sort: upcoming confirmed first, then past, then cancelled
+    const today = todayStr();
+    const sorted = [...bookings].sort((a, b) => {
+      if (a.status !== b.status) return a.status === 'confirmed' ? -1 : 1;
+      if (a.date !== b.date) return a.date.localeCompare(b.date);
+      return a.hour - b.hour;
+    });
+
+    const rows = sorted.map(b => {
+      const isPast = b.date < today;
+      const dateObj = new Date(b.date + 'T00:00:00');
+      const dateLabel = `${DAYS[dateObj.getDay()]} ${MONTHS[dateObj.getMonth()]} ${dateObj.getDate()}`;
+      const timeLabel = formatTime(b.hour);
+      const badge = b.status === 'confirmed'
+        ? `<span class="badge badge-confirmed">Confirmed</span>`
+        : `<span class="badge badge-cancelled">Cancelled</span>`;
+      const cancelBtn = b.status === 'confirmed'
+        ? `<div class="cancel-wrap" id="cw-${b.id}" data-id="${b.id}">
+             <button class="btn-sm btn-danger" data-action="ask">Cancel</button>
+           </div>`
+        : '';
+
+      return `<tr>
+        <td>
+          <div>${escHtml(b.name)}</div>
+          <div class="text-muted">${escHtml(b.email)}</div>
+          <div class="text-muted">${escHtml(b.phone)}</div>
+        </td>
+        <td>
+          <div ${isPast && b.status === 'confirmed' ? 'style="color:#94a3b8"' : ''}>${dateLabel}</div>
+          <div class="text-muted">${timeLabel}</div>
+        </td>
+        <td>${escHtml(b.service)}</td>
+        <td>${badge}</td>
+        <td>${b.notes ? `<span title="${escHtml(b.notes)}">${escHtml(b.notes.slice(0, 50))}${b.notes.length > 50 ? '…' : ''}</span>` : '<span class="text-muted">—</span>'}</td>
+        <td>
+          <div class="booking-id">${b.id.slice(0, 8)}…</div>
+          <div class="text-muted">${formatCreatedAt(b.createdAt)}</div>
+        </td>
+        <td>${cancelBtn}</td>
+      </tr>`;
+    }).join('');
+
+    document.getElementById('tableArea').innerHTML = `
+      <table>
+        <thead>
+          <tr>
+            <th>Client</th><th>Appointment</th><th>Service</th><th>Status</th><th>Notes</th><th>Booked</th><th></th>
+          </tr>
+        </thead>
+        <tbody>${rows}</tbody>
+      </table>`;
+  }
+
+  function askCancel(id) {
+    const wrap = document.getElementById(`cw-${id}`);
+    if (!wrap) return;
+    wrap.innerHTML = `
+      <span style="font-size:.8rem;color:#94a3b8;margin-right:6px">Sure?</span>
+      <button class="btn-sm btn-danger" data-action="confirm">Yes</button>
+      <button class="btn-sm" data-action="reset">No</button>`;
+  }
+
+  function resetCancel(id) {
+    const wrap = document.getElementById(`cw-${id}`);
+    if (!wrap) return;
+    wrap.innerHTML = `<button class="btn-sm btn-danger" data-action="ask">Cancel</button>`;
+  }
+
+  async function doCancel(id) {
+    const wrap = document.getElementById(`cw-${id}`);
+    if (wrap) wrap.innerHTML = '<span style="color:#64748b;font-size:.8rem">Cancelling…</span>';
+    try {
+      const res = await apiFetch(`/api/bookings/${id}/cancel`, null, { method: 'POST' });
+      if (res.ok) {
+        const b = allBookings.find(x => x.id === id);
+        if (b) b.status = 'cancelled';
+        renderAll();
+        toast('Booking cancelled', 'success');
+      } else {
+        const data = await res.json();
+        resetCancel(id);
+        toast(data.error || 'Cancel failed', 'error');
+      }
+    } catch {
+      resetCancel(id);
+      toast('Network error', 'error');
+    }
+  }
+
+  function todayStr() {
+    const d = new Date();
+    return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+  }
+
+  function formatTime(hour) {
+    const suffix = hour >= 12 ? 'PM' : 'AM';
+    const h = hour > 12 ? hour - 12 : (hour === 0 ? 12 : hour);
+    return `${h}:00 ${suffix}`;
+  }
+
+  function formatCreatedAt(iso) {
+    if (!iso) return '—';
+    const d = new Date(iso);
+    return `${MONTHS[d.getMonth()]} ${d.getDate()}, ${d.getFullYear()}`;
+  }
+
+  function escHtml(str) {
+    return String(str ?? '')
+      .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+      .replace(/"/g,'&quot;').replace(/'/g,'&#039;');
+  }
+
+  function toast(msg, type) {
+    const el = document.createElement('div');
+    el.className = `toast toast-${type}`;
+    el.textContent = msg;
+    document.getElementById('toastContainer').appendChild(el);
+    setTimeout(() => el.remove(), 3500);
+  }
+</script>
+</body>
+</html>
