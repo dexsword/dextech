@@ -50,21 +50,27 @@ db.pragma('foreign_keys = ON');
 
 db.exec(`
   CREATE TABLE IF NOT EXISTS bookings (
-    id         TEXT PRIMARY KEY,
-    name       TEXT NOT NULL,
-    email      TEXT NOT NULL,
-    phone      TEXT NOT NULL,
-    date       TEXT NOT NULL,
-    hour       INTEGER NOT NULL,
-    service    TEXT NOT NULL,
-    notes      TEXT NOT NULL DEFAULT '',
-    status     TEXT NOT NULL DEFAULT 'confirmed',
-    created_at TEXT NOT NULL,
+    id              TEXT PRIMARY KEY,
+    name            TEXT NOT NULL,
+    email           TEXT NOT NULL,
+    phone           TEXT NOT NULL,
+    date            TEXT NOT NULL,
+    hour            INTEGER NOT NULL,
+    service         TEXT NOT NULL,
+    notes           TEXT NOT NULL DEFAULT '',
+    status          TEXT NOT NULL DEFAULT 'confirmed',
+    cancel_reason   TEXT NOT NULL DEFAULT '',
+    created_at      TEXT NOT NULL,
     UNIQUE(date, hour, status) -- enforced via check in app layer
   );
   CREATE INDEX IF NOT EXISTS idx_bookings_date ON bookings(date);
   CREATE INDEX IF NOT EXISTS idx_bookings_status ON bookings(status);
 `);
+
+// Add cancel_reason column if upgrading from older schema
+try {
+  db.exec(`ALTER TABLE bookings ADD COLUMN cancel_reason TEXT NOT NULL DEFAULT ''`);
+} catch (_) { /* column already exists */ }
 
 // Migrate existing bookings.json if present
 const fs = require('fs');
@@ -108,7 +114,7 @@ const stmtInsert = db.prepare(
    VALUES (@id, @name, @email, @phone, @date, @hour, @service, @notes, 'confirmed', @created_at)`
 );
 const stmtCancel = db.prepare(
-  `UPDATE bookings SET status = 'cancelled' WHERE id = ? AND status != 'cancelled'`
+  `UPDATE bookings SET status = 'cancelled', cancel_reason = ? WHERE id = ? AND status != 'cancelled'`
 );
 const stmtIsBooked = db.prepare(
   `SELECT 1 FROM bookings WHERE date = ? AND hour = ? AND status = 'confirmed' LIMIT 1`
@@ -354,8 +360,20 @@ app.get('/api/bookings', requireAdmin, (req, res) => {
   res.json(rows.map(rowToBooking));
 });
 
+const VALID_CANCEL_REASONS = new Set([
+  'Schedule conflict',
+  'Customer request',
+  'Emergency',
+  'Weather',
+  'Other',
+]);
+
 app.post('/api/bookings/:id/cancel', requireAdmin, (req, res) => {
   const { id } = req.params;
+  const reason = (req.body.reason || '').trim();
+  if (!reason || !VALID_CANCEL_REASONS.has(reason)) {
+    return res.status(422).json({ error: 'Please select a cancellation reason' });
+  }
   const booking = stmtById.get(id);
   if (!booking) {
     return res.status(404).json({ error: 'Booking not found' });
@@ -363,10 +381,15 @@ app.post('/api/bookings/:id/cancel', requireAdmin, (req, res) => {
   if (booking.status === 'cancelled') {
     return res.status(409).json({ error: 'Booking already cancelled' });
   }
-  const result = stmtCancel.run(id);
+  const result = stmtCancel.run(reason, id);
   if (result.changes === 0) {
     return res.status(500).json({ error: 'Cancel failed' });
   }
+
+  sendCancellationSms({ ...rowToBooking(booking), cancelReason: reason }).catch(err =>
+    console.error('[error] Cancellation SMS failed:', err.message)
+  );
+
   res.json({ success: true });
 });
 
@@ -493,6 +516,7 @@ function rowToBooking(row) {
     service: row.service,
     notes: row.notes,
     status: row.status,
+    cancelReason: row.cancel_reason || '',
     createdAt: row.created_at,
   };
 }
@@ -545,6 +569,28 @@ async function sendSmsNotifications(booking) {
   }
 
   await Promise.all(sends);
+}
+
+async function sendCancellationSms(booking) {
+  if (!SMS_ENABLED) return;
+
+  const customerTo = toE164(booking.phone);
+  if (!customerTo) {
+    console.warn(`[warn] Could not parse customer phone for cancellation SMS: ${booking.phone}`);
+    return;
+  }
+
+  const client = twilio(process.env.TWILIO_ACCOUNT_SID, process.env.TWILIO_AUTH_TOKEN);
+  const formattedDate = new Date(booking.date + 'T00:00:00').toLocaleDateString('en-US', {
+    weekday: 'long', month: 'long', day: 'numeric',
+  });
+  const timeStr = formatTimeStr(booking.hour);
+
+  const body = `Hi ${booking.name}, your Dex Tech appointment for ${booking.service} on ${formattedDate} at ${timeStr} has been cancelled (${booking.cancelReason}). We'd love to reschedule — book at dextech.cloud or call/text (845) 596-1708. Reply STOP to opt out.`;
+
+  client.messages.create({ from: process.env.TWILIO_FROM, to: customerTo, body })
+    .then(msg => console.log(`[info] Cancellation SMS sent to ${customerTo} sid=${msg.sid}`))
+    .catch(err => console.error(`[error] Cancellation SMS failed (${err.code}): ${err.message}`));
 }
 
 // ─── Start ────────────────────────────────────────────────────────────────────

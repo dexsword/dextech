@@ -302,7 +302,10 @@
         </td>
         <td>${escHtml(b.service)}</td>
         <td>${badge}</td>
-        <td>${b.notes ? `<span title="${escHtml(b.notes)}">${escHtml(b.notes.slice(0, 50))}${b.notes.length > 50 ? '…' : ''}</span>` : '<span class="text-muted">—</span>'}</td>
+        <td>
+          ${b.notes ? `<span title="${escHtml(b.notes)}">${escHtml(b.notes.slice(0, 50))}${b.notes.length > 50 ? '…' : ''}</span>` : '<span class="text-muted">—</span>'}
+          ${b.cancelReason ? `<div class="text-muted" style="margin-top:2px">Reason: ${escHtml(b.cancelReason)}</div>` : ''}
+        </td>
         <td>
           <div class="booking-id">${b.id.slice(0, 8)}…</div>
           <div class="text-muted">${formatCreatedAt(b.createdAt)}</div>
@@ -322,13 +325,25 @@
       </table>`;
   }
 
+  const CANCEL_REASONS = ['Schedule conflict', 'Customer request', 'Emergency', 'Weather', 'Other'];
+
   function askCancel(id) {
     const wrap = document.getElementById(`cw-${id}`);
     if (!wrap) return;
+    const options = CANCEL_REASONS.map(r =>
+      `<option value="${r}">${r}</option>`
+    ).join('');
     wrap.innerHTML = `
-      <span style="font-size:.8rem;color:#94a3b8;margin-right:6px">Sure?</span>
-      <button class="btn-sm btn-danger" data-action="confirm">Yes</button>
-      <button class="btn-sm" data-action="reset">No</button>`;
+      <div style="display:flex;flex-direction:column;gap:6px;align-items:flex-start">
+        <select class="cancel-reason-select" style="background:#0f172a;color:#f1f5f9;border:1px solid #475569;border-radius:6px;padding:4px 8px;font-size:.8rem;width:100%">
+          <option value="">Reason…</option>
+          ${options}
+        </select>
+        <div style="display:flex;gap:6px">
+          <button class="btn-sm btn-danger" data-action="confirm">Confirm cancel</button>
+          <button class="btn-sm" data-action="reset">Back</button>
+        </div>
+      </div>`;
   }
 
   function resetCancel(id) {
@@ -339,14 +354,23 @@
 
   async function doCancel(id) {
     const wrap = document.getElementById(`cw-${id}`);
+    const select = wrap ? wrap.querySelector('.cancel-reason-select') : null;
+    const reason = select ? select.value : '';
+    if (!reason) {
+      toast('Please select a reason first', 'error');
+      return;
+    }
     if (wrap) wrap.innerHTML = '<span style="color:#64748b;font-size:.8rem">Cancelling…</span>';
     try {
-      const res = await apiFetch(`/api/bookings/${id}/cancel`, null, { method: 'POST' });
+      const res = await apiFetch(`/api/bookings/${id}/cancel`, null, {
+        method: 'POST',
+        body: JSON.stringify({ reason }),
+      });
       if (res.ok) {
         const b = allBookings.find(x => x.id === id);
-        if (b) b.status = 'cancelled';
+        if (b) { b.status = 'cancelled'; b.cancelReason = reason; }
         renderAll();
-        toast('Booking cancelled', 'success');
+        toast('Booking cancelled — customer notified by SMS', 'success');
       } else {
         const data = await res.json();
         resetCancel(id);
