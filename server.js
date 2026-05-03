@@ -44,7 +44,7 @@ const VALID_SERVICES = new Set([
 ]);
 
 // ─── Database setup ───────────────────────────────────────────────────────────
-const db = new Database(path.join(__dirname, 'bookings.db'));
+const db = new Database(process.env.DB_PATH || '/var/lib/dextech/bookings.db');
 db.pragma('journal_mode = WAL');
 db.pragma('foreign_keys = ON');
 
