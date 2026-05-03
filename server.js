@@ -132,6 +132,7 @@ const stmtById = db.prepare(`SELECT * FROM bookings WHERE id = ?`);
 
 // ─── Express app ──────────────────────────────────────────────────────────────
 const app = express();
+app.set('trust proxy', 1); // trust first proxy (Apache)
 
 app.use(helmet({
   contentSecurityPolicy: {
@@ -153,7 +154,7 @@ const allowedOrigins = process.env.ALLOWED_ORIGINS
   : null;
 
 app.use(cors({
-  origin: allowedOrigins || true,
+  origin: allowedOrigins || ['https://dextech.cloud', 'https://www.dextech.cloud'],
   methods: ['GET', 'POST', 'DELETE'],
   allowedHeaders: ['Content-Type', 'Authorization'],
 }));
@@ -195,8 +196,9 @@ function requireAdmin(req, res, next) {
     return res.status(503).json({ error: 'Admin access not configured' });
   }
   const auth = req.headers['authorization'];
-  const token = auth?.startsWith('Bearer ') ? auth.slice(7) : req.query.token;
+  const token = auth?.startsWith('Bearer ') ? auth.slice(7) : null;
   if (!token || token !== ADMIN_TOKEN) {
+    console.warn(`[warn] Failed admin auth from ${req.ip}`);
     return res.status(401).json({ error: 'Unauthorized' });
   }
   next();
@@ -356,7 +358,8 @@ app.post('/api/bookings', bookingLimiter, (req, res) => {
 
 app.get('/api/bookings', requireAdmin, (req, res) => {
   const { status } = req.query;
-  const rows = status ? stmtByStatus.all(status) : stmtAll.all();
+  const validStatuses = new Set(['confirmed', 'cancelled']);
+  const rows = (status && validStatuses.has(status)) ? stmtByStatus.all(status) : stmtAll.all();
   res.json(rows.map(rowToBooking));
 });
 
