@@ -77,7 +77,6 @@ function initBookingWidget() {
   
   console.log('Booking widget initialized');
 
-  var currentDate = new Date();
   var selectedDate = null;
   var selectedTime = null;
   var availability = {};
@@ -87,20 +86,29 @@ function initBookingWidget() {
   var step3 = document.getElementById('step3');
   var step4 = document.getElementById('step4');
   var calendarDays = document.getElementById('calendarDays');
-  var currentMonthSpan = document.getElementById('currentMonth');
+  var currentWeekSpan = document.getElementById('currentWeek');
   var timeSlots = document.getElementById('timeSlots');
   var bookingForm = document.getElementById('bookingForm');
   var bookingError = document.getElementById('bookingError');
 
+  function getWeekStart(date) {
+    var d = new Date(date);
+    d.setHours(0, 0, 0, 0);
+    d.setDate(d.getDate() - d.getDay());
+    return d;
+  }
+
+  var currentWeek = getWeekStart(new Date());
+
   fetchAvailability();
 
-  document.getElementById('prevMonth').addEventListener('click', function() {
-    currentDate.setMonth(currentDate.getMonth() - 1);
+  document.getElementById('prevWeek').addEventListener('click', function() {
+    currentWeek.setDate(currentWeek.getDate() - 7);
     renderCalendar();
   });
 
-  document.getElementById('nextMonth').addEventListener('click', function() {
-    currentDate.setMonth(currentDate.getMonth() + 1);
+  document.getElementById('nextWeek').addEventListener('click', function() {
+    currentWeek.setDate(currentWeek.getDate() + 7);
     renderCalendar();
   });
 
@@ -140,67 +148,56 @@ function initBookingWidget() {
   }
 
   function renderCalendarFallback() {
-    var today = new Date();
-    var todayStr = formatDate(today);
-    if (!availability[todayStr]) {
-      availability[todayStr] = [9, 10, 11, 12, 13, 14, 15, 16, 17];
-    }
     renderCalendar();
   }
 
   function renderCalendar() {
-    var year = currentDate.getFullYear();
-    var month = currentDate.getMonth();
-    var monthNames = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
-    
-    currentMonthSpan.textContent = monthNames[month] + ' ' + year;
-    
-    var firstDay = new Date(year, month, 1).getDay();
-    var daysInMonth = new Date(year, month + 1, 0).getDate();
     var today = new Date();
     today.setHours(0, 0, 0, 0);
-    
+    var maxDate = new Date(today);
+    maxDate.setDate(today.getDate() + 14);
+
+    var weekEnd = new Date(currentWeek);
+    weekEnd.setDate(currentWeek.getDate() + 6);
+
+    var monthNames = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+    var label = weekEnd.getMonth() === currentWeek.getMonth()
+      ? monthNames[currentWeek.getMonth()] + ' ' + currentWeek.getDate() + ' – ' + weekEnd.getDate() + ', ' + weekEnd.getFullYear()
+      : monthNames[currentWeek.getMonth()] + ' ' + currentWeek.getDate() + ' – ' + monthNames[weekEnd.getMonth()] + ' ' + weekEnd.getDate() + ', ' + weekEnd.getFullYear();
+    currentWeekSpan.textContent = label;
+
+    var dayNames = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
     var html = '';
-    
-    for (var i = 0; i < firstDay; i++) {
-      html += '<div class="calendar-day empty"></div>';
-    }
-    
-    for (var day = 1; day <= daysInMonth; day++) {
-      var date = new Date(year, month, day);
+
+    for (var i = 0; i < 7; i++) {
+      var date = new Date(currentWeek);
+      date.setDate(currentWeek.getDate() + i);
       var dateStr = formatDate(date);
-      var dayOfWeek = date.getDay();
       var isPast = date < today;
-      var isSunday = dayOfWeek === 0;
+      var isSunday = date.getDay() === 0;
+      var isBeyond = date > maxDate;
       var hasSlots = availability[dateStr] && availability[dateStr].length > 0;
-      var classes = 'calendar-day';
-      
-      if (isPast || isSunday) {
-        classes += ' disabled';
-      }
-      if (hasSlots) {
-        classes += ' has-slots';
-      }
-      if (selectedDate === dateStr) {
-        classes += ' selected';
-      }
-      
-      html += '<div class="' + classes + '" data-date="' + dateStr + '"' + (isPast || isSunday ? '' : 'tabindex="0"') + '>' + day + '</div>';
+      var disabled = isPast || isSunday || isBeyond;
+      var classes = 'calendar-day' + (disabled ? ' disabled' : '') + (hasSlots && !disabled ? ' has-slots' : '') + (selectedDate === dateStr ? ' selected' : '');
+
+      html += '<div class="' + classes + '" data-date="' + dateStr + '"' + (!disabled ? ' tabindex="0"' : '') + '>';
+      html += '<span class="cal-day-name">' + dayNames[date.getDay()] + '</span>';
+      html += '<span class="cal-day-num">' + date.getDate() + '</span>';
+      html += '</div>';
     }
-    
+
     calendarDays.innerHTML = html;
-    
-    calendarDays.querySelectorAll('.calendar-day:not(.disabled):not(.empty)').forEach(function(el) {
-      el.addEventListener('click', function() {
-        selectDate(this.getAttribute('data-date'));
-      });
+
+    calendarDays.querySelectorAll('.calendar-day:not(.disabled)').forEach(function(el) {
+      el.addEventListener('click', function() { selectDate(this.getAttribute('data-date')); });
       el.addEventListener('keydown', function(e) {
-        if (e.key === 'Enter' || e.key === ' ') {
-          e.preventDefault();
-          selectDate(this.getAttribute('data-date'));
-        }
+        if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); selectDate(this.getAttribute('data-date')); }
       });
     });
+
+    var todayWeek = getWeekStart(today);
+    document.getElementById('prevWeek').disabled = currentWeek <= todayWeek;
+    document.getElementById('nextWeek').disabled = currentWeek >= getWeekStart(maxDate);
   }
 
   function selectDate(dateStr) {
@@ -356,6 +353,7 @@ function initBookingWidget() {
   function resetBooking() {
     selectedDate = null;
     selectedTime = null;
+    currentWeek = getWeekStart(new Date());
     bookingForm.reset();
     bookingError.style.display = 'none';
     var submitBtn = bookingForm.querySelector('button[type="submit"]');

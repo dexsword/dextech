@@ -447,12 +447,10 @@ app.post('/api/bookings/:id/cancel-customer', cancelLimiter, (req, res) => {
 // ─── Static files ─────────────────────────────────────────────────────────────
 app.use(express.static(__dirname));
 
-app.get('/', (_req, res) => res.sendFile(path.join(__dirname, 'index.html')));
-app.get('/cancel', (_req, res) => res.sendFile(path.join(__dirname, 'cancel.html')));
-app.get('/admin', (_req, res) => {
-  res.setHeader('Cache-Control', 'no-store');
-  res.sendFile(path.join(__dirname, 'admin.html'));
-});
+const HTML_NO_CACHE = { headers: { 'Cache-Control': 'no-store' } };
+app.get('/', (_req, res) => res.sendFile(path.join(__dirname, 'index.html'), HTML_NO_CACHE));
+app.get('/cancel', (_req, res) => res.sendFile(path.join(__dirname, 'cancel.html'), HTML_NO_CACHE));
+app.get('/admin', (_req, res) => res.sendFile(path.join(__dirname, 'admin.html'), HTML_NO_CACHE));
 
 // ─── Global error handler ─────────────────────────────────────────────────────
 app.use((err, _req, res, _next) => {

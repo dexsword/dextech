@@ -490,26 +490,15 @@
                 <div class="booking-step active" id="step1">
                   <h4><span class="step-num">1</span> Choose Date</h4>
                   <div class="calendar-nav">
-                    <button type="button" id="prevMonth" aria-label="Previous month">
+                    <button type="button" id="prevWeek" aria-label="Previous week">
                       <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"/></svg>
                     </button>
-                    <span id="currentMonth"></span>
-                    <button type="button" id="nextMonth" aria-label="Next month">
+                    <span id="currentWeek"></span>
+                    <button type="button" id="nextWeek" aria-label="Next week">
                       <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"/></svg>
                     </button>
                   </div>
-                  <div class="calendar-grid" id="calendarGrid">
-                    <div class="calendar-header">
-                      <span>Sun</span>
-                      <span>Mon</span>
-                      <span>Tue</span>
-                      <span>Wed</span>
-                      <span>Thu</span>
-                      <span>Fri</span>
-                      <span>Sat</span>
-                    </div>
-                    <div id="calendarDays"></div>
-                  </div>
+                  <div class="week-calendar" id="calendarDays"></div>
                 </div>
 
                 <div class="booking-step" id="step2">
