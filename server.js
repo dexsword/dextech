@@ -266,6 +266,57 @@ function validateBookingInput({ name, email, phone, date, hour, service, notes }
   return errors;
 }
 
+// ─── Google Calendar busy-time cache ─────────────────────────────────────────
+const gcalCache = { periods: [], fetchedAt: 0 };
+const GCAL_CACHE_TTL = 2 * 60 * 1000; // refresh every 2 minutes
+
+async function refreshGCalBusy() {
+  if (!GCAL_ENABLED) return;
+  if (Date.now() - gcalCache.fetchedAt < GCAL_CACHE_TTL) return;
+
+  const timeMin = new Date();
+  timeMin.setHours(0, 0, 0, 0);
+  const timeMax = new Date(timeMin);
+  timeMax.setDate(timeMin.getDate() + BOOKING_HORIZON_DAYS + 1);
+
+  try {
+    const calendar = getCalendarClient();
+    const calendarId = process.env.GOOGLE_CALENDAR_ID || 'primary';
+    const res = await calendar.freebusy.query({
+      requestBody: {
+        timeMin: timeMin.toISOString(),
+        timeMax: timeMax.toISOString(),
+        items: [{ id: calendarId }],
+      },
+    });
+    gcalCache.periods = res.data.calendars[calendarId]?.busy || [];
+    gcalCache.fetchedAt = Date.now();
+    console.log(`[info] GCal busy cache refreshed: ${gcalCache.periods.length} period(s)`);
+  } catch (err) {
+    console.error('[error] GCal freebusy query failed:', err.message);
+  }
+}
+
+function laTimeToUTC(dateStr, hour) {
+  // Determine LA UTC offset at noon on this date (safe from DST boundary at 2am)
+  const noonUTC = new Date(dateStr + 'T12:00:00Z');
+  const laNoon = parseInt(new Intl.DateTimeFormat('en-US', {
+    timeZone: 'America/Los_Angeles', hour: 'numeric', hour12: false,
+  }).format(noonUTC));
+  const offsetHours = 12 - laNoon; // e.g. LA=5am → offset=7 (UTC-7/PDT)
+  const midnightUTC = new Date(dateStr + 'T00:00:00Z').getTime();
+  return new Date(midnightUTC + (hour + offsetHours) * 3_600_000);
+}
+
+function isSlotBlockedByCalendar(dateStr, hour) {
+  if (!gcalCache.periods.length) return false;
+  const slotStart = laTimeToUTC(dateStr, hour);
+  const slotEnd = new Date(slotStart.getTime() + 30 * 60_000); // 30-min session
+  return gcalCache.periods.some(({ start, end }) =>
+    slotStart < new Date(end) && slotEnd > new Date(start)
+  );
+}
+
 // ─── Availability helpers ─────────────────────────────────────────────────────
 function getBookedHours(dateStr) {
   return new Set(stmtSlotsByDate.all(dateStr).map(r => r.hour));
@@ -273,7 +324,7 @@ function getBookedHours(dateStr) {
 
 function getAvailableSlots(dateStr) {
   const booked = getBookedHours(dateStr);
-  return HOURS.filter(h => !booked.has(h));
+  return HOURS.filter(h => !booked.has(h) && !isSlotBlockedByCalendar(dateStr, h));
 }
 
 // ─── Routes ───────────────────────────────────────────────────────────────────
@@ -289,7 +340,9 @@ app.get('/health', (_req, res) => {
   });
 });
 
-app.get('/api/availability', (_req, res) => {
+app.get('/api/availability', async (_req, res) => {
+  await refreshGCalBusy();
+
   const today = new Date();
   today.setHours(0, 0, 0, 0);
   const availability = {};
@@ -305,11 +358,12 @@ app.get('/api/availability', (_req, res) => {
   res.json(availability);
 });
 
-app.get('/api/availability/:date', (req, res) => {
+app.get('/api/availability/:date', async (req, res) => {
   const { date } = req.params;
   if (!DATE_RE.test(date)) {
     return res.status(400).json({ error: 'Invalid date format' });
   }
+  await refreshGCalBusy();
   res.json({ date, available: getAvailableSlots(date) });
 });
 
@@ -358,6 +412,7 @@ app.post('/api/bookings', bookingLimiter, (req, res) => {
   );
   createCalendarEvent(booking).then(eventId => {
     if (eventId) stmtUpdateGcalId.run(eventId, booking.id);
+    gcalCache.fetchedAt = 0; // invalidate so next availability check reflects new event
   }).catch(err =>
     console.error('[error] Calendar event creation failed:', err.message)
   );
