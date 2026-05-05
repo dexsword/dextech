@@ -1,0 +1,149 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Cancel Appointment | Dex Tech</title>
+  <meta name="description" content="Cancel your Dex Tech appointment.">
+
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+
+  <link rel="stylesheet" href="style.css">
+  <link rel="icon" href="favicon.png" type="image/png">
+</head>
+<body>
+  <header class="header" role="banner">
+    <div class="header-inner">
+      <a href="index.html" class="logo" aria-label="Dex Tech - Home">Dex<span>.</span>Tech</a>
+      <nav class="nav-links" id="navLinks" role="navigation" aria-label="Main navigation">
+        <a href="index.html">Home</a>
+        <a href="index.html#services">Services</a>
+        <a href="index.html#contact">Contact</a>
+        <a href="tel:+18455961708" class="nav-phone" aria-label="Call Dex Tech">
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72 12.84 12.84 0 0 0 .7 2.81 2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 2.81.7A2 2 0 0 1 22 16.92z"/>
+          </svg>
+          (845) 596-1708
+        </a>
+      </nav>
+      <button class="mobile-menu-btn" id="mobileMenuBtn" aria-label="Toggle menu" aria-expanded="false" aria-controls="navLinks">
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <line x1="3" y1="12" x2="21" y2="12"/>
+          <line x1="3" y1="6" x2="21" y2="6"/>
+          <line x1="3" y1="18" x2="21" y2="18"/>
+        </svg>
+      </button>
+    </div>
+  </header>
+
+  <main>
+    <section class="hero" style="padding: calc(var(--header-height) + 4rem) 0 4rem; min-height: auto;">
+      <div class="container">
+        <div class="hero-content">
+          <h1 class="hero-title">Cancel Appointment</h1>
+          <p class="hero-description">Enter your booking ID and email address to cancel. Need to reschedule instead? Call or text <a href="tel:+18455961708" style="color:inherit;">(845) 596-1708</a>.</p>
+        </div>
+      </div>
+    </section>
+
+    <section class="contact" id="cancel-form-section">
+      <div class="container">
+        <div class="booking-widget" style="max-width: 480px; margin: 0 auto;">
+
+          <div id="cancelForm">
+            <div class="form-group">
+              <label for="bookingId" class="form-label">Booking ID</label>
+              <input type="text" id="bookingId" class="form-input" placeholder="e.g. a1b2c3d4-..." autocomplete="off" spellcheck="false">
+            </div>
+            <div class="form-group">
+              <label for="cancelEmail" class="form-label">Email address used at booking</label>
+              <input type="email" id="cancelEmail" class="form-input" placeholder="you@example.com" autocomplete="email">
+            </div>
+            <div id="cancelError" class="booking-error" style="display:none;"></div>
+            <button id="cancelBtn" class="btn btn-primary" style="width:100%; margin-top: 0.5rem;">Cancel My Appointment</button>
+          </div>
+
+          <div id="cancelSuccess" style="display:none; text-align:center; padding: 2rem 0;">
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="#10b981" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:48px;height:48px;margin-bottom:1rem;" aria-hidden="true">
+              <polyline points="20 6 9 17 4 12"/>
+            </svg>
+            <h2 style="margin-bottom:0.5rem;">Appointment Cancelled</h2>
+            <p style="color: var(--text-muted);">Your appointment has been cancelled and the time slot has been freed. If you'd like to rebook, <a href="index.html#booking">click here</a>.</p>
+          </div>
+
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer class="footer" role="contentinfo">
+    <div class="container">
+      <div class="footer-bottom" style="border-top: none; padding-top: 0;">
+        <p>&copy; 2025 Dex Tech. All rights reserved.</p>
+      </div>
+    </div>
+  </footer>
+
+  <script>
+    // Pre-fill booking ID from query param
+    const params = new URLSearchParams(window.location.search);
+    const idParam = params.get('id');
+    if (idParam) document.getElementById('bookingId').value = idParam;
+
+    document.getElementById('cancelBtn').addEventListener('click', async function () {
+      const id = document.getElementById('bookingId').value.trim();
+      const email = document.getElementById('cancelEmail').value.trim();
+      const errorEl = document.getElementById('cancelError');
+
+      errorEl.style.display = 'none';
+
+      if (!id) { showError('Please enter your booking ID.'); return; }
+      if (!email) { showError('Please enter your email address.'); return; }
+
+      this.disabled = true;
+      this.textContent = 'Cancelling…';
+
+      try {
+        const res = await fetch('/api/bookings/' + encodeURIComponent(id) + '/cancel-customer', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ email }),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Cancellation failed. Please try again.');
+        document.getElementById('cancelForm').style.display = 'none';
+        document.getElementById('cancelSuccess').style.display = 'block';
+      } catch (err) {
+        showError(err.message);
+        this.disabled = false;
+        this.textContent = 'Cancel My Appointment';
+      }
+
+      function showError(msg) {
+        errorEl.textContent = msg;
+        errorEl.style.display = 'block';
+      }
+    });
+
+    // Mobile menu (matches other pages)
+    const mobileMenuBtn = document.getElementById('mobileMenuBtn');
+    const navLinks = document.getElementById('navLinks');
+    if (mobileMenuBtn && navLinks) {
+      mobileMenuBtn.addEventListener('click', function () {
+        const isExpanded = navLinks.classList.toggle('active');
+        mobileMenuBtn.setAttribute('aria-expanded', isExpanded);
+        document.body.style.overflow = isExpanded ? 'hidden' : '';
+      });
+      document.addEventListener('click', function (e) {
+        if (!navLinks.contains(e.target) && !mobileMenuBtn.contains(e.target)) {
+          navLinks.classList.remove('active');
+          mobileMenuBtn.setAttribute('aria-expanded', 'false');
+          document.body.style.overflow = '';
+        }
+      });
+    }
+  </script>
+</body>
+</html>

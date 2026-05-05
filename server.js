@@ -4,7 +4,7 @@ const cors = require('cors');
 const helmet = require('helmet');
 const rateLimit = require('express-rate-limit');
 const nodemailer = require('nodemailer');
-const twilio = require('twilio');
+const { google } = require('googleapis');
 const Database = require('better-sqlite3');
 const path = require('path');
 const { randomUUID } = require('crypto');
@@ -16,10 +16,10 @@ if (!EMAIL_ENABLED) {
   console.warn('[warn] Email disabled — set SMTP_HOST, SMTP_USER, SMTP_PASS to enable confirmations');
 }
 
-const REQUIRED_FOR_SMS = ['TWILIO_ACCOUNT_SID', 'TWILIO_AUTH_TOKEN', 'TWILIO_FROM'];
-const SMS_ENABLED = REQUIRED_FOR_SMS.every(k => process.env[k]);
-if (!SMS_ENABLED) {
-  console.warn('[warn] SMS disabled — set TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_FROM to enable');
+const REQUIRED_FOR_GCAL = ['GOOGLE_CLIENT_ID', 'GOOGLE_CLIENT_SECRET', 'GOOGLE_REFRESH_TOKEN'];
+const GCAL_ENABLED = REQUIRED_FOR_GCAL.every(k => process.env[k]);
+if (!GCAL_ENABLED) {
+  console.warn('[warn] Google Calendar disabled — set GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, GOOGLE_REFRESH_TOKEN');
 }
 
 const ADMIN_TOKEN = process.env.ADMIN_TOKEN;
@@ -60,17 +60,16 @@ db.exec(`
     notes           TEXT NOT NULL DEFAULT '',
     status          TEXT NOT NULL DEFAULT 'confirmed',
     cancel_reason   TEXT NOT NULL DEFAULT '',
+    gcal_event_id   TEXT NOT NULL DEFAULT '',
     created_at      TEXT NOT NULL,
-    UNIQUE(date, hour, status) -- enforced via check in app layer
+    UNIQUE(date, hour, status)
   );
   CREATE INDEX IF NOT EXISTS idx_bookings_date ON bookings(date);
   CREATE INDEX IF NOT EXISTS idx_bookings_status ON bookings(status);
 `);
 
-// Add cancel_reason column if upgrading from older schema
-try {
-  db.exec(`ALTER TABLE bookings ADD COLUMN cancel_reason TEXT NOT NULL DEFAULT ''`);
-} catch (_) { /* column already exists */ }
+try { db.exec(`ALTER TABLE bookings ADD COLUMN cancel_reason TEXT NOT NULL DEFAULT ''`); } catch (_) {}
+try { db.exec(`ALTER TABLE bookings ADD COLUMN gcal_event_id TEXT NOT NULL DEFAULT ''`); } catch (_) {}
 
 // Migrate existing bookings.json if present
 const fs = require('fs');
@@ -113,6 +112,9 @@ const stmtInsert = db.prepare(
   `INSERT INTO bookings (id, name, email, phone, date, hour, service, notes, status, created_at)
    VALUES (@id, @name, @email, @phone, @date, @hour, @service, @notes, 'confirmed', @created_at)`
 );
+const stmtUpdateGcalId = db.prepare(
+  `UPDATE bookings SET gcal_event_id = ? WHERE id = ?`
+);
 const stmtCancel = db.prepare(
   `UPDATE bookings SET status = 'cancelled', cancel_reason = ? WHERE id = ? AND status != 'cancelled'`
 );
@@ -132,7 +134,7 @@ const stmtById = db.prepare(`SELECT * FROM bookings WHERE id = ?`);
 
 // ─── Express app ──────────────────────────────────────────────────────────────
 const app = express();
-app.set('trust proxy', 1); // trust first proxy (Apache)
+app.set('trust proxy', 1);
 
 app.use(helmet({
   contentSecurityPolicy: {
@@ -167,6 +169,7 @@ const bookingLimiter = rateLimit({
   max: 10,
   standardHeaders: true,
   legacyHeaders: false,
+  validate: { xForwardedForHeader: false },
   message: { error: 'Too many booking attempts. Please try again later.' },
 });
 
@@ -175,6 +178,16 @@ const apiLimiter = rateLimit({
   max: 120,
   standardHeaders: true,
   legacyHeaders: false,
+  validate: { xForwardedForHeader: false },
+});
+
+const cancelLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 10,
+  standardHeaders: true,
+  legacyHeaders: false,
+  validate: { xForwardedForHeader: false },
+  message: { error: 'Too many cancellation attempts. Please try again later.' },
 });
 
 app.use('/api/', apiLimiter);
@@ -272,6 +285,7 @@ app.get('/health', (_req, res) => {
     timestamp: new Date().toISOString(),
     confirmed_bookings: bookingCount.n,
     email_enabled: EMAIL_ENABLED,
+    gcal_enabled: GCAL_ENABLED,
   });
 });
 
@@ -314,7 +328,6 @@ app.post('/api/bookings', bookingLimiter, (req, res) => {
   const cleanService = service.trim();
   const cleanNotes = (notes || '').trim();
 
-  // Atomic check-and-insert using SQLite's exclusive write lock
   const book = db.transaction(() => {
     const taken = stmtIsBooked.get(date, hourNum);
     if (taken) return null;
@@ -339,18 +352,20 @@ app.post('/api/bookings', bookingLimiter, (req, res) => {
     return res.status(409).json({ error: 'This time slot was just taken. Please choose another.' });
   }
 
-  // Fire-and-forget notifications (don't hold the response)
+  // Fire-and-forget: email ICS to customer + create calendar event for admin
   sendConfirmationEmail(booking).catch(err =>
     console.error('[error] Confirmation email failed:', err.message)
   );
-  sendSmsNotifications(booking).catch(err =>
-    console.error('[error] SMS notification failed:', err.message)
+  createCalendarEvent(booking).then(eventId => {
+    if (eventId) stmtUpdateGcalId.run(eventId, booking.id);
+  }).catch(err =>
+    console.error('[error] Calendar event creation failed:', err.message)
   );
 
   res.status(201).json({
     success: true,
     bookingId: booking.id,
-    message: 'Booking confirmed! You will receive an SMS confirmation shortly.',
+    message: 'Booking confirmed! Check your email for a calendar invite.',
   });
 });
 
@@ -389,9 +404,42 @@ app.post('/api/bookings/:id/cancel', requireAdmin, (req, res) => {
     return res.status(500).json({ error: 'Cancel failed' });
   }
 
-  sendCancellationSms({ ...rowToBooking(booking), cancelReason: reason }).catch(err =>
-    console.error('[error] Cancellation SMS failed:', err.message)
-  );
+  if (booking.gcal_event_id) {
+    deleteCalendarEvent(booking.gcal_event_id).catch(err =>
+      console.error('[error] Calendar event deletion failed:', err.message)
+    );
+  }
+
+  res.json({ success: true });
+});
+
+// Customer self-cancellation
+app.post('/api/bookings/:id/cancel-customer', cancelLimiter, (req, res) => {
+  const { id } = req.params;
+  const email = (req.body.email || '').trim().toLowerCase();
+
+  if (!email || !EMAIL_RE.test(email)) {
+    return res.status(422).json({ error: 'Valid email address required' });
+  }
+
+  const booking = stmtById.get(id);
+  if (!booking || booking.email !== email) {
+    return res.status(404).json({ error: 'No confirmed booking found with that ID and email.' });
+  }
+  if (booking.status === 'cancelled') {
+    return res.status(409).json({ error: 'This booking is already cancelled.' });
+  }
+
+  const result = stmtCancel.run('Customer request', id);
+  if (result.changes === 0) {
+    return res.status(500).json({ error: 'Cancellation failed. Please try again.' });
+  }
+
+  if (booking.gcal_event_id) {
+    deleteCalendarEvent(booking.gcal_event_id).catch(err =>
+      console.error('[error] Calendar event deletion failed on customer cancel:', err.message)
+    );
+  }
 
   res.json({ success: true });
 });
@@ -400,6 +448,7 @@ app.post('/api/bookings/:id/cancel', requireAdmin, (req, res) => {
 app.use(express.static(__dirname));
 
 app.get('/', (_req, res) => res.sendFile(path.join(__dirname, 'index.html')));
+app.get('/cancel', (_req, res) => res.sendFile(path.join(__dirname, 'cancel.html')));
 app.get('/admin', (_req, res) => {
   res.setHeader('Cache-Control', 'no-store');
   res.sendFile(path.join(__dirname, 'admin.html'));
@@ -411,7 +460,7 @@ app.use((err, _req, res, _next) => {
   res.status(500).json({ error: 'Internal server error' });
 });
 
-// ─── Email ────────────────────────────────────────────────────────────────────
+// ─── Helpers ──────────────────────────────────────────────────────────────────
 function formatTimeStr(hour) {
   const suffix = hour >= 12 ? 'PM' : 'AM';
   const h = hour > 12 ? hour - 12 : (hour === 0 ? 12 : hour);
@@ -425,10 +474,38 @@ function formatDate(d) {
   return `${y}-${m}-${day}`;
 }
 
+function escapeHtml(str) {
+  return String(str)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#039;');
+}
+
+function rowToBooking(row) {
+  return {
+    id: row.id,
+    name: row.name,
+    email: row.email,
+    phone: row.phone,
+    date: row.date,
+    hour: row.hour,
+    service: row.service,
+    notes: row.notes,
+    status: row.status,
+    cancelReason: row.cancel_reason || '',
+    gcalEventId: row.gcal_event_id || '',
+    createdAt: row.created_at,
+  };
+}
+
+// ─── Email (customer ICS) ─────────────────────────────────────────────────────
 function buildICS(booking) {
   const d = booking.date.replace(/-/g, '');
   const startH = String(booking.hour).padStart(2, '0');
-  const endH = String(booking.hour + 1).padStart(2, '0');
+  const endH = String(booking.hour).padStart(2, '0');
+  const endMin = '30'; // 30-minute sessions
   const now = new Date().toISOString().replace(/[-:.]/g, '').slice(0, 15) + 'Z';
   return [
     'BEGIN:VCALENDAR',
@@ -438,7 +515,7 @@ function buildICS(booking) {
     `UID:${booking.id}@dextech.cloud`,
     `DTSTAMP:${now}`,
     `DTSTART:${d}T${startH}0000`,
-    `DTEND:${d}T${endH}0000`,
+    `DTEND:${d}T${endH}${endMin}00`,
     `SUMMARY:Dex Tech – ${booking.service}`,
     `DESCRIPTION:Tech support appointment with Dex Tech.`,
     'END:VEVENT',
@@ -496,111 +573,72 @@ async function sendConfirmationEmail(booking) {
     text: `Appointment Confirmed – Dex Tech\n\nHi ${booking.name},\n\nYour appointment is confirmed:\n  Date: ${formattedDate}\n  Time: ${timeStr}\n  Service: ${booking.service}\n  Booking ID: ${booking.id}\n\nTo reschedule or cancel, reply to this email or call (845) 596-1708.\n\nSee you soon!\n— Dex Tech`,
   });
 
-  console.log(`[info] Confirmation sent to ${booking.email} for booking ${booking.id}`);
+  console.log(`[info] Confirmation email sent to ${booking.email} for booking ${booking.id}`);
 }
 
-function escapeHtml(str) {
-  return String(str)
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#039;');
+// ─── Google Calendar ──────────────────────────────────────────────────────────
+function getCalendarClient() {
+  const auth = new google.auth.OAuth2(
+    process.env.GOOGLE_CLIENT_ID,
+    process.env.GOOGLE_CLIENT_SECRET,
+  );
+  auth.setCredentials({ refresh_token: process.env.GOOGLE_REFRESH_TOKEN });
+  return google.calendar({ version: 'v3', auth });
 }
 
-function rowToBooking(row) {
-  return {
-    id: row.id,
-    name: row.name,
-    email: row.email,
-    phone: row.phone,
-    date: row.date,
-    hour: row.hour,
-    service: row.service,
-    notes: row.notes,
-    status: row.status,
-    cancelReason: row.cancel_reason || '',
-    createdAt: row.created_at,
+async function createCalendarEvent(booking) {
+  if (!GCAL_ENABLED) return null;
+
+  const calendar = getCalendarClient();
+  const calendarId = process.env.GOOGLE_CALENDAR_ID || 'primary';
+  const startH = String(booking.hour).padStart(2, '0');
+  const siteUrl = process.env.SITE_URL || 'https://dextech.cloud';
+  const cancelUrl = `${siteUrl}/cancel?id=${booking.id}`;
+
+  const event = {
+    summary: `${booking.service} — ${booking.name}`,
+    description: [
+      `Phone: ${booking.phone}`,
+      `Email: ${booking.email}`,
+      booking.notes ? `Notes: ${booking.notes}` : '',
+      `Booking ID: ${booking.id}`,
+      '',
+      `Need to cancel? ${cancelUrl}`,
+    ].filter(Boolean).join('\n'),
+    start: {
+      dateTime: `${booking.date}T${startH}:00:00`,
+      timeZone: 'America/Los_Angeles',
+    },
+    end: {
+      dateTime: `${booking.date}T${startH}:30:00`,
+      timeZone: 'America/Los_Angeles',
+    },
+    attendees: [{ email: booking.email }],
   };
-}
 
-// ─── SMS ──────────────────────────────────────────────────────────────────────
-function toE164(phone) {
-  const digits = phone.replace(/\D/g, '');
-  if (digits.length === 10) return `+1${digits}`;
-  if (digits.length === 11 && digits[0] === '1') return `+${digits}`;
-  return null;
-}
-
-async function sendSmsNotifications(booking) {
-  if (!SMS_ENABLED) return;
-
-  const client = twilio(process.env.TWILIO_ACCOUNT_SID, process.env.TWILIO_AUTH_TOKEN);
-  const formattedDate = new Date(booking.date + 'T00:00:00').toLocaleDateString('en-US', {
-    weekday: 'long', month: 'long', day: 'numeric',
+  const response = await calendar.events.insert({
+    calendarId,
+    resource: event,
+    sendUpdates: 'all',
   });
-  const timeStr = formatTimeStr(booking.hour);
-  const from = process.env.TWILIO_FROM;
-
-  const customerTo = toE164(booking.phone);
-  const adminTo = process.env.ADMIN_PHONE ? toE164(process.env.ADMIN_PHONE) : null;
-
-  const sends = [];
-
-  if (customerTo) {
-    sends.push(
-      client.messages.create({
-        from,
-        to: customerTo,
-        body: `Your appointment with Dex Tech is confirmed for ${formattedDate} at ${timeStr}. Questions? Call/text (845) 596-1708. Reply STOP to opt out.`,
-      }).then(msg => console.log(`[info] Customer SMS sent to ${customerTo} sid=${msg.sid}`))
-        .catch(err => console.error(`[error] Customer SMS failed (${err.code}): ${err.message}`))
-    );
-  } else {
-    console.warn(`[warn] Could not parse customer phone for SMS: ${booking.phone}`);
-  }
-
-  if (adminTo) {
-    sends.push(
-      client.messages.create({
-        from,
-        to: adminTo,
-        body: `New booking: ${booking.name} — ${booking.service} on ${formattedDate} at ${timeStr}. Phone: ${booking.phone}.`,
-      }).then(msg => console.log(`[info] Admin SMS sent sid=${msg.sid}`))
-        .catch(err => console.error(`[error] Admin SMS failed (${err.code}): ${err.message}`))
-    );
-  }
-
-  await Promise.all(sends);
+  console.log(`[info] Calendar event created for booking ${booking.id}: ${response.data.id}`);
+  return response.data.id;
 }
 
-async function sendCancellationSms(booking) {
-  if (!SMS_ENABLED) return;
+async function deleteCalendarEvent(gcalEventId) {
+  if (!GCAL_ENABLED) return;
 
-  const customerTo = toE164(booking.phone);
-  if (!customerTo) {
-    console.warn(`[warn] Could not parse customer phone for cancellation SMS: ${booking.phone}`);
-    return;
-  }
-
-  const client = twilio(process.env.TWILIO_ACCOUNT_SID, process.env.TWILIO_AUTH_TOKEN);
-  const formattedDate = new Date(booking.date + 'T00:00:00').toLocaleDateString('en-US', {
-    weekday: 'long', month: 'long', day: 'numeric',
-  });
-  const timeStr = formatTimeStr(booking.hour);
-
-  const body = `Hi ${booking.name}, your Dex Tech appointment for ${booking.service} on ${formattedDate} at ${timeStr} has been cancelled (${booking.cancelReason}). We'd love to reschedule — book at dextech.cloud or call/text (845) 596-1708. Reply STOP to opt out.`;
-
-  client.messages.create({ from: process.env.TWILIO_FROM, to: customerTo, body })
-    .then(msg => console.log(`[info] Cancellation SMS sent to ${customerTo} sid=${msg.sid}`))
-    .catch(err => console.error(`[error] Cancellation SMS failed (${err.code}): ${err.message}`));
+  const calendar = getCalendarClient();
+  const calendarId = process.env.GOOGLE_CALENDAR_ID || 'primary';
+  await calendar.events.delete({ calendarId, eventId: gcalEventId, sendUpdates: 'all' });
+  console.log(`[info] Calendar event deleted: ${gcalEventId}`);
 }
 
 // ─── Start ────────────────────────────────────────────────────────────────────
 const server = app.listen(PORT, () => {
   console.log(`[info] Dex Tech server running on port ${PORT}`);
   console.log(`[info] Email confirmations: ${EMAIL_ENABLED ? 'enabled' : 'disabled'}`);
-  console.log(`[info] SMS notifications: ${SMS_ENABLED ? 'enabled' : 'disabled'}`);
+  console.log(`[info] Google Calendar: ${GCAL_ENABLED ? 'enabled' : 'disabled'}`);
   console.log(`[info] Admin panel: ${ADMIN_TOKEN ? '/admin' : 'disabled (set ADMIN_TOKEN)'}`);
 });
 
