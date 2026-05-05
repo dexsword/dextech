@@ -370,7 +370,7 @@
         const b = allBookings.find(x => x.id === id);
         if (b) { b.status = 'cancelled'; b.cancelReason = reason; }
         renderAll();
-        toast('Booking cancelled — customer notified by SMS', 'success');
+        toast('Booking cancelled — calendar invite removed', 'success');
       } else {
         const data = await res.json();
         resetCancel(id);
