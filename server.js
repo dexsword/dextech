@@ -28,7 +28,7 @@ if (!ADMIN_TOKEN) {
 }
 
 const PORT = process.env.PORT || 3000;
-const BOOKING_HORIZON_DAYS = 14;
+const BOOKING_HORIZON_DAYS = 35;
 const HOURS = [9, 10, 11, 12, 13, 14, 15, 16, 17];
 const VALID_SERVICES = new Set([
   'Home & Office Setup',

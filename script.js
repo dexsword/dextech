@@ -155,7 +155,7 @@ function initBookingWidget() {
     var today = new Date();
     today.setHours(0, 0, 0, 0);
     var maxDate = new Date(today);
-    maxDate.setDate(today.getDate() + 14);
+    maxDate.setDate(today.getDate() + 35);
 
     var weekEnd = new Date(currentWeek);
     weekEnd.setDate(currentWeek.getDate() + 6);
