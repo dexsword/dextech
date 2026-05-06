@@ -282,18 +282,32 @@ async function refreshGCalBusy() {
   try {
     const calendar = getCalendarClient();
     const calendarId = process.env.GOOGLE_CALENDAR_ID || 'primary';
-    const res = await calendar.freebusy.query({
-      requestBody: {
-        timeMin: timeMin.toISOString(),
-        timeMax: timeMax.toISOString(),
-        items: [{ id: calendarId }],
-      },
+    const res = await calendar.events.list({
+      calendarId,
+      timeMin: timeMin.toISOString(),
+      timeMax: timeMax.toISOString(),
+      singleEvents: true,
+      orderBy: 'startTime',
+      maxResults: 500,
     });
-    gcalCache.periods = res.data.calendars[calendarId]?.busy || [];
+
+    const events = (res.data.items || []).filter(e => e.status !== 'cancelled');
+    gcalCache.periods = events.map(e => {
+      if (e.start.dateTime) {
+        // Timed event — use UTC datetimes as-is
+        return { start: e.start.dateTime, end: e.end.dateTime };
+      }
+      // All-day event — convert calendar date to LA midnight in UTC so the
+      // full local day is blocked regardless of the server's timezone
+      return {
+        start: laTimeToUTC(e.start.date, 0).toISOString(),
+        end:   laTimeToUTC(e.end.date,   0).toISOString(),
+      };
+    });
     gcalCache.fetchedAt = Date.now();
-    console.log(`[info] GCal busy cache refreshed: ${gcalCache.periods.length} period(s)`);
+    console.log(`[info] GCal events cache refreshed: ${gcalCache.periods.length} event(s)`);
   } catch (err) {
-    console.error('[error] GCal freebusy query failed:', err.message);
+    console.error('[error] GCal events fetch failed:', err.message);
   }
 }
 
@@ -347,7 +361,7 @@ app.get('/api/availability', async (_req, res) => {
   today.setHours(0, 0, 0, 0);
   const availability = {};
 
-  for (let i = 0; i < BOOKING_HORIZON_DAYS; i++) {
+  for (let i = 0; i <= BOOKING_HORIZON_DAYS; i++) {
     const d = new Date(today);
     d.setDate(today.getDate() + i);
     if (d.getDay() === 0) continue;
@@ -355,7 +369,7 @@ app.get('/api/availability', async (_req, res) => {
     availability[dateStr] = getAvailableSlots(dateStr);
   }
 
-  res.json(availability);
+  res.set('Cache-Control', 'no-store').json(availability);
 });
 
 app.get('/api/availability/:date', async (req, res) => {
@@ -364,7 +378,7 @@ app.get('/api/availability/:date', async (req, res) => {
     return res.status(400).json({ error: 'Invalid date format' });
   }
   await refreshGCalBusy();
-  res.json({ date, available: getAvailableSlots(date) });
+  res.set('Cache-Control', 'no-store').json({ date, available: getAvailableSlots(date) });
 });
 
 app.post('/api/bookings', bookingLimiter, (req, res) => {
