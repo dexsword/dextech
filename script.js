@@ -80,6 +80,7 @@ function initBookingWidget() {
   var selectedDate = null;
   var selectedTime = null;
   var availability = {};
+  var pendingStripeUrl = null;
 
   var step1 = document.getElementById('step1');
   var step2 = document.getElementById('step2');
@@ -101,6 +102,20 @@ function initBookingWidget() {
   var currentWeek = getWeekStart(new Date());
 
   fetchAvailability();
+
+  // "Book & Pay" service card buttons: scroll to widget, pre-select service, store Stripe URL
+  document.querySelectorAll('.service-buy-btn[data-stripe]').forEach(function(btn) {
+    btn.addEventListener('click', function(e) {
+      e.preventDefault();
+      var service = this.getAttribute('data-service');
+      var stripe = this.getAttribute('data-stripe');
+      resetBooking();
+      pendingStripeUrl = stripe;
+      document.getElementById('bookingService').value = service;
+      var widget = document.getElementById('bookingWidget');
+      if (widget) widget.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    });
+  });
 
   document.getElementById('prevWeek').addEventListener('click', function() {
     currentWeek.setDate(currentWeek.getDate() - 7);
@@ -348,17 +363,29 @@ function initBookingWidget() {
     details.appendChild(setText('Time', formatTime(time)));
     details.appendChild(setText('Service', service));
     if (bookingId) details.appendChild(setText('Booking ID', bookingId));
+
+    var paymentAction = document.getElementById('paymentAction');
+    var stripePayBtn = document.getElementById('stripePayBtn');
+    if (pendingStripeUrl && paymentAction && stripePayBtn) {
+      stripePayBtn.href = pendingStripeUrl;
+      paymentAction.style.display = 'block';
+    } else if (paymentAction) {
+      paymentAction.style.display = 'none';
+    }
   }
 
   function resetBooking() {
     selectedDate = null;
     selectedTime = null;
+    pendingStripeUrl = null;
     currentWeek = getWeekStart(new Date());
     bookingForm.reset();
     bookingError.style.display = 'none';
     var submitBtn = bookingForm.querySelector('button[type="submit"]');
     submitBtn.disabled = false;
     submitBtn.textContent = 'Book Appointment';
+    var paymentAction = document.getElementById('paymentAction');
+    if (paymentAction) paymentAction.style.display = 'none';
     fetchAvailability();
     showStep(1);
   }

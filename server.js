@@ -31,6 +31,7 @@ const PORT = process.env.PORT || 3000;
 const BOOKING_HORIZON_DAYS = 35;
 const HOURS = [9, 10, 11, 12, 13, 14, 15, 16, 17];
 const VALID_SERVICES = new Set([
+  'Consultation',
   'Home & Office Setup',
   'Tech Support & Troubleshooting',
   'Custom PC Build',

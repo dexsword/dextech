@@ -270,7 +270,7 @@
             <h3 class="service-title">Custom PC Builds</h3>
             <p class="service-description">Gaming rigs, workstations, or custom setups. Parts consultation and full assembly included.</p>
             <span class="service-price">Starting at $61.75/hr</span>
-            <a href="https://buy.stripe.com/7sY28j75Be0N0SZ3VuaAw06" target="_blank" rel="noopener noreferrer" class="btn btn-primary btn-sm service-buy-btn">Book &amp; Pay</a>
+            <a href="#booking" data-service="Custom PC Build" data-stripe="https://buy.stripe.com/7sY28j75Be0N0SZ3VuaAw06" class="btn btn-primary btn-sm service-buy-btn">Book &amp; Pay</a>
           </article>
 
           <article class="service-card">
@@ -282,7 +282,7 @@
             <h3 class="service-title">PC Tune-Up</h3>
             <p class="service-description">Boost your computer's speed with startup optimization, cleanup, and resource tuning.</p>
             <span class="service-price">$71.25</span>
-            <a href="https://buy.stripe.com/14A00bahNf4RfNT3VuaAw02" target="_blank" rel="noopener noreferrer" class="btn btn-primary btn-sm service-buy-btn">Book &amp; Pay</a>
+            <a href="#booking" data-service="PC Tune-Up" data-stripe="https://buy.stripe.com/14A00bahNf4RfNT3VuaAw02" class="btn btn-primary btn-sm service-buy-btn">Book &amp; Pay</a>
           </article>
 
           <article class="service-card">
@@ -294,7 +294,7 @@
             <h3 class="service-title">Virus & Junk Removal</h3>
             <p class="service-description">Complete malware scan, bloatware removal, and security health check for peace of mind.</p>
             <span class="service-price">$85.50</span>
-            <a href="https://buy.stripe.com/00w5kv61x2i50SZ8bKaAw03" target="_blank" rel="noopener noreferrer" class="btn btn-primary btn-sm service-buy-btn">Book &amp; Pay</a>
+            <a href="#booking" data-service="Virus &amp; Junk Removal" data-stripe="https://buy.stripe.com/00w5kv61x2i50SZ8bKaAw03" class="btn btn-primary btn-sm service-buy-btn">Book &amp; Pay</a>
           </article>
 
           <article class="service-card">
@@ -309,7 +309,7 @@
             <h3 class="service-title">Network Optimization</h3>
             <p class="service-description">Improve Wi-Fi coverage, speed, and security for your home or office network.</p>
             <span class="service-price">$95</span>
-            <a href="https://buy.stripe.com/7sYeV53Tp4qdbxD0JiaAw04" target="_blank" rel="noopener noreferrer" class="btn btn-primary btn-sm service-buy-btn">Book &amp; Pay</a>
+            <a href="#booking" data-service="Network Optimization" data-stripe="https://buy.stripe.com/7sYeV53Tp4qdbxD0JiaAw04" class="btn btn-primary btn-sm service-buy-btn">Book &amp; Pay</a>
           </article>
 
           <article class="service-card">
@@ -322,7 +322,7 @@
             <h3 class="service-title">Pi-hole Setup</h3>
             <p class="service-description">Network-wide ad blocking using Pi-hole on your Raspberry Pi or compatible hardware.</p>
             <span class="service-price">$114</span>
-            <a href="https://buy.stripe.com/28E28j61xg8V8lr63CaAw05" target="_blank" rel="noopener noreferrer" class="btn btn-primary btn-sm service-buy-btn">Book &amp; Pay</a>
+            <a href="#booking" data-service="Pi-hole Setup" data-stripe="https://buy.stripe.com/28E28j61xg8V8lr63CaAw05" class="btn btn-primary btn-sm service-buy-btn">Book &amp; Pay</a>
           </article>
 
           <article class="service-card">
@@ -530,6 +530,7 @@
                       <label for="bookingService">Service Needed</label>
                       <select id="bookingService" name="service" required>
                         <option value="">Select a service...</option>
+                        <option value="Consultation">Consultation</option>
                         <option value="Tech Support & Troubleshooting">Tech Support & Troubleshooting</option>
                         <option value="Home & Office Setup">Home & Office Setup</option>
                         <option value="Custom PC Build">Custom PC Build</option>
@@ -562,7 +563,11 @@
                     <h3>Appointment Confirmed!</h3>
                     <p>We'll send you a confirmation email shortly.</p>
                     <div class="confirmation-details" id="confirmationDetails"></div>
-                    <button type="button" class="btn btn-primary" id="bookAnother">Book Another</button>
+                    <div id="paymentAction" style="display:none; margin: 1rem 0;">
+                      <p style="margin-bottom: 0.75rem; color: var(--color-body);">Your slot is reserved — complete payment to confirm your appointment:</p>
+                      <a id="stripePayBtn" href="#" target="_blank" rel="noopener noreferrer" class="btn btn-primary" style="display:inline-block; margin-bottom: 0.5rem;">Complete Payment</a>
+                    </div>
+                    <button type="button" class="btn btn-secondary" id="bookAnother">Book Another</button>
                   </div>
                 </div>
               </div>
