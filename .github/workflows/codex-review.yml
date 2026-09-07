@@ -186,7 +186,7 @@ jobs:
           ref: ${{ needs.snapshot.outputs.base }}
           persist-credentials: false
           path: control
-      - name: Publish sanitized exact-head review feedback
+      - name: Publish metadata-only exact-head review feedback
         env:
           GH_TOKEN: ${{ github.token }}
           HEAD_SHA: ${{ needs.snapshot.outputs.head }}

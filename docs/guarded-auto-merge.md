@@ -110,10 +110,14 @@ masked/missing output, API/action error, timeout, and low confidence fail closed
 Cancelled runs can leave an in-progress check, which also blocks merging; rerun
 the entire trusted workflow to recover. No `continue-on-error` path passes review.
 
-Valid structured failures with confidence >= 0.95 and blocking findings create or update one managed PR
-comment bound to the exact reviewed head. It contains only schema-validated
-severity, file/line, explanation, confidence and summary fields rendered as
-sanitized plain text. Model-supplied mentions, HTML and Markdown cannot render.
+Valid structured failures with confidence >= 0.95 and blocking findings create or
+update one managed PR comment bound to the exact reviewed head. An independent
+output allowlist permits only fixed status text, counts by schema-validated
+severity, bounded numeric confidence and the validated snapshot SHA. Model-supplied
+filenames, line locations, explanations and summaries are never published.
+Formatting sanitization and secret-pattern matching cannot establish that arbitrary
+model text is safe: it may quote credentials, customer/Calendar data or exceptions.
+The comment deliberately withholds that text rather than attempting redaction.
 A later clean high-confidence exact-head review updates the same comment to
 resolved. Malformed, missing, low-confidence or otherwise nonactionable output
 creates no comment. The feedback job is separate from the read-only reviewer and
@@ -172,7 +176,7 @@ probability or substitute for tests/human approvals.
 
 Custom check summaries contain only sanitized metadata; raw model text is not
 copied to check summaries, comments or uploaded artifacts. Managed comments use
-only the bounded, schema-validated and escaped fields described above. The
+only the explicitly allowlisted metadata described above; no model free text. The
 upstream action and Actions output/environment plumbing can put review text in
 Actions logs. Only public repository source is sent;
 do not commit sensitive information or enable debug tracing. Existing GitHub log

@@ -205,7 +205,7 @@ test('publisher fails closed on review timeout but ineligibility alone stays neu
   }
 });
 
-test('valid blocking findings create one sanitized exact-head PR feedback comment', async () => {
+test('valid blocking findings create one metadata-only exact-head PR feedback comment', async () => {
   const finding = { verdict: 'fail', confidence: 0.97, blocking_findings: [{
     severity: 'P2', file: 'index.html', line_start: 599, line_end: 599,
     explanation: 'Use <script> @owner [unsafe](https://example.invalid)\nthen fix the route.'
@@ -223,11 +223,10 @@ test('valid blocking findings create one sanitized exact-head PR feedback commen
   assert.equal(write.endpoint, '/repos/dexsword/dextech/issues/12/comments');
   assert.match(write.body.body, /dextech-codex-review-feedback:v1/);
   assert.match(write.body.body, new RegExp(head));
-  assert.match(write.body.body, /P2/);
-  assert.match(write.body.body, /index\\\.html/);
-  assert.match(write.body.body, /&lt;script&gt;/);
-  assert.match(write.body.body, /&#64;owner/);
-  assert.doesNotMatch(write.body.body, /\nthen|\[unsafe\]\(https/);
+  assert.match(write.body.body, /P0: 0, P1: 0, P2: 1, P3: 0/);
+  for (const value of [finding.summary, finding.blocking_findings[0].file, finding.blocking_findings[0].explanation]) {
+    assert.equal(write.body.body.includes(value), false);
+  }
   assert.equal(calls.filter(call => call.endpoint.endsWith('/pulls/12')).length, 2);
 });
 
@@ -459,7 +458,7 @@ test('full history fixes shallow exact-head ancestry while non-descendants still
     error => error.status === 1);
 });
 
-test('feedback rejects low-confidence blocking failures and strips rendering controls', async () => {
+test('feedback rejects low-confidence blocking failures and withholds all free text', async () => {
   const result = { ...clean(), verdict: 'fail', confidence: 0.5, blocking_findings: [{
     severity: 'P1', file: '`@owner`<img>.js', line_start: 1, line_end: 1,
     explanation: 'https://example.invalid\u202e\u0085<script> @owner'
@@ -468,9 +467,13 @@ test('feedback rejects low-confidence blocking failures and strips rendering con
     async () => { assert.fail('Low-confidence output must not call GitHub'); });
   assert.equal(p.reviewPass(JSON.stringify(result), 'success'), false);
   const body = c.feedbackBody({ ...result, confidence: 0.97 }, expected);
-  assert.equal(c.commentText('~~$x$~~'), String.raw`\~\~\$x\$\~\~`);
-  assert.match(body, /— \\`&#64;owner\\`&lt;img&gt;/);
   assert.doesNotMatch(body, /[\u202e\u0085]|<img>|<script>|https:|@owner/);
+  const alternate = structuredClone(result);
+  alternate.confidence = 0.97;
+  alternate.summary = 'Different summary';
+  Object.assign(alternate.blocking_findings[0], { file: 'different.js', explanation: 'Different explanation', line_start: 99, line_end: 100 });
+  assert.equal(c.feedbackBody(alternate, expected), body);
+
 });
 
 test('feedback finds its managed comment on later pages and checks the head before updating', async () => {
@@ -511,4 +514,34 @@ test('duplicate managed comments fail closed instead of creating or updating fee
       if (endpoint.endsWith('/pulls/12')) return pr();
       return [managed, { ...managed, id: 1000 }];
     }));
+});
+
+
+test('comment API never receives model-provided sensitive text on creation, update or resolution', async () => {
+  // Deliberately synthetic data, not credentials or customer information.
+  const samples = ['SYNTHETIC_SECRET_DO_NOT_PUBLISH', 'SYNTHETIC_CUSTOMER_RECORD',
+    'SYNTHETIC_CALENDAR_EVENT', 'SYNTHETIC_RAW_EXCEPTION_BODY'];
+  const managed = { id: 999, user: { login: 'github-actions[bot]', type: 'Bot' },
+    body: '<!-- dextech-codex-review-feedback:v1 -->\nold finding' };
+  for (const sample of samples) {
+    for (const mode of ['create', 'update', 'resolve']) {
+      const result = { verdict: mode === 'resolve' ? 'pass' : 'fail', confidence: 0.98,
+        summary: sample, blocking_findings: mode === 'resolve' ? [] : [{
+          severity: 'P1', file: sample, explanation: sample, line_start: 123, line_end: 456
+        }] };
+      const writes = [];
+      await c.publishFeedback({ ...env(), REVIEW_JSON: JSON.stringify(result), REVIEW_RESULT: 'success' },
+        async (endpoint, method = 'GET', body) => {
+          if (method !== 'GET') { writes.push({ endpoint, method, body }); return {}; }
+          if (endpoint.endsWith('/pulls/12')) return pr();
+          if (endpoint.endsWith('/comments?per_page=100&page=1')) return mode === 'create' ? [] : [managed];
+          assert.fail('Unexpected request');
+        });
+      assert.equal(writes.length, 1);
+      assert.equal(writes[0].method, mode === 'create' ? 'POST' : 'PATCH');
+      assert.equal(JSON.stringify(writes).includes(sample), false);
+      assert.doesNotMatch(writes[0].body.body, /123|456/);
+      assert.match(writes[0].body.body, new RegExp(head));
+    }
+  }
 });

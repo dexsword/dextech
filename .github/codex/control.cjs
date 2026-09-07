@@ -169,35 +169,25 @@ async function publish(env, api) {
   if (!passed || !classificationOK) fail();
 }
 
-function commentText(value) {
-  // Model output and candidate-controlled names are untrusted. Render plain text,
-  // suppress mentions/HTML and strip control characters before publishing.
-  return String(value).normalize('NFKC')
-    .replace(/[\p{Cc}\p{Cf}]/gu, ' ')
-    .replace(/([\\`*_[\]()#+.!|~{}$=-])/g, '\\$1')
-    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
-    .replace(/@/g, '&#64;').replace(/:/g, '&#58;')
-    .trim();
-}
-
 function feedbackBody(result, match) {
-  if (result.confidence < policy.CONFIDENCE) return null;
+  // Schema/format validation cannot establish that free text is safe to disclose.
+  // Independent output allowlist: fixed prose, enum-derived counts, bounded
+  // numeric confidence and a validated snapshot SHA. No model text or locations.
+  if (!policy.validateSchema(result, require('./review.schema.json')) || !sha(match.head) ||
+      result.confidence < policy.CONFIDENCE) return null;
+  const header = `${FEEDBACK_MARKER}\n## Codex review feedback\n\n`;
+  const metadata = `**Reviewed head:** \`${match.head}\`  \n` +
+    `**Confidence:** ${result.confidence.toFixed(2)}\n\n`;
   if (result.verdict === 'fail' && result.blocking_findings.length > 0) {
-    const findings = result.blocking_findings.map((finding, index) => {
-      const location = finding.line_start === null ? '' :
-        `, line ${finding.line_start}${finding.line_end === null || finding.line_end === finding.line_start ? '' : `-${finding.line_end}`}`;
-      return `${index + 1}. **${finding.severity}** — ${commentText(finding.file)}${location}\n   ${commentText(finding.explanation)}`;
-    }).join('\n');
-    return `${FEEDBACK_MARKER}\n## Codex review feedback\n\n` +
-      `**Status:** Changes requested  \n**Reviewed head:** \`${match.head}\`  \n` +
-      `**Confidence:** ${result.confidence.toFixed(2)}\n\n### Blocking findings\n\n${findings}\n\n` +
-      `### Summary\n\n${commentText(result.summary)}\n\n` +
+    const counts = ['P0', 'P1', 'P2', 'P3'].map(severity =>
+      `${severity}: ${result.blocking_findings.filter(finding => finding.severity === severity).length}`);
+    return header + '**Status:** Changes requested  \n' + metadata +
+      `**Blocking findings:** ${counts.join(', ')}\n\n` +
+      'Model-supplied filenames, locations, explanations and summaries are withheld to prevent disclosure.\n\n' +
       '_This feedback applies only to the exact head above. A new push requires a new review._';
   }
-  if (result.verdict === 'pass' && result.confidence >= policy.CONFIDENCE && result.blocking_findings.length === 0) {
-    return `${FEEDBACK_MARKER}\n## Codex review feedback\n\n` +
-      `**Status:** Resolved by a clean exact-head review  \n**Reviewed head:** \`${match.head}\`  \n` +
-      `**Confidence:** ${result.confidence.toFixed(2)}\n\n` +
+  if (result.verdict === 'pass' && result.blocking_findings.length === 0) {
+    return header + '**Status:** Resolved by a clean exact-head review  \n' + metadata +
       'The latest schema-validated review found no blocking findings. Previous feedback is superseded.';
   }
   return null;
@@ -298,4 +288,4 @@ if (require.main === module) main(process.env).catch(() => {
 });
 
 module.exports = { expected, client, snapshot, candidate, readBlob, classifyCandidate, prepare,
-  publish, commentText, feedbackBody, publishFeedback, disarmAutoMerge, requestAutoMerge };
+  publish, feedbackBody, publishFeedback, disarmAutoMerge, requestAutoMerge };
