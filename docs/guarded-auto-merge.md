@@ -84,17 +84,61 @@ The action is the final substantive step. Never run its privilege-dropping setup
 on DexServe or another persistent/self-hosted production runner.
 
 Separate fresh jobs create/publish checks (`contents: read`, `checks: write`).
-A separate revocation job has `contents: write`, `pull-requests: write` solely to
-**disable** previous native auto-merge requests before any final passing checks.
-This also resets previously human-enabled auto-merge requests: a new sensitive
-change must not inherit permission from an old eligible head. Revocation failure
-fails the gate. The distinct **enable** job runs only after gate and eligibility
-pass, with `contents: write`, `pull-requests: write`, `checks: read`; it receives no
-model response, API key or candidate checkout. It rereads the same run's check
-IDs, head SHA, run/attempt binding, results, current main and current PR immediately
-before requesting `enablePullRequestAutoMerge` with `expectedHeadOid` and
-`mergeMethod: SQUASH`. GitHub atomically rejects a changed head. There is no direct
-merge fallback. A stale base, stale head, draft, closed PR or fork stops the request.
+The order is deliberately:
+
+1. `snapshot` creates both custom PR-head checks **in progress**.
+2. `disarm` revokes any earlier native request before `eligibility` and `review`
+   evaluate the captured candidate. It has `contents: write`, `pull-requests: write`
+   solely to disable stale requests. Failure blocks evaluation/publication.
+3. `eligibility` and the read-only `review` run. Ordinary deterministic CI continues
+   independently; GitHub must still enforce its required `checks` result.
+4. For eligible non-draft PRs, `auto-merge` validates the structured review again
+   (confidence >= 0.95, no blocking findings, successful review/disarming and
+   eligibility). It checks both custom checks are still **in progress** with null
+   conclusions and this run's IDs/head/attempt binding, then rereads current main
+   and the open, non-draft, same-repository PR immediately before the mutation.
+5. While the checks remain pending, it requests `enablePullRequestAutoMerge` with
+   `expectedHeadOid` and `mergeMethod: SQUASH`. It validates the mutation response's
+   PR ID, head and method, then independently reads back current main and PR to
+   confirm native squash auto-merge is enabled. An already-enabled matching squash
+   request uses the same checks/read-back without another mutation; another method
+   or a stale candidate fails closed.
+6. Only after the request job succeeds does `publish` validate its head/base/run
+   confirmation, reread live PR/main and the enabled squash request, independently
+   validate the review, and complete `Codex Review / gate` and
+   `Auto Merge / eligible` successfully. GitHub can then observe the completed
+   requirements and merge when every configured protection/approval permits it.
+
+The request job has `contents: write`, `pull-requests: write`, `checks: read`;
+it cannot complete checks. It receives structured review data for validation,
+but no OpenAI key, deployment credentials, or candidate checkout. The publisher
+cannot request a merge. Codex remains the final substantive step of its read-only
+job; no PR-controlled code executes in either write job. Native auto-merge is
+requested **before** successful required checks, because GitHub may reject enabling
+it on a PR that is already immediately mergeable. No immediate merge fallback exists.
+
+Failure to request or confirm auto-merge leaves both authorization checks pending
+or failed, never successful. Cancellation or failure before publication leaves
+pending checks; rerun the complete trusted workflow to recover. Confirmation is
+bound to the workflow run/attempt, captured head and base, never just a boolean.
+If publication is interrupted after one check succeeds, the other remains pending
+and still blocks merging. GitHub offers no transaction across the two check writes.
+Strict up-to-date protection remains required: the head precondition is atomic,
+but reading main and publishing checks are separate API operations.
+
+Ineligible changes skip the request job: a valid review gets a successful gate and
+**neutral** eligibility for manual review. Drafts also skip requesting auto-merge;
+a valid draft review can complete its checks, but marking it ready triggers a new
+run. A changed ready/draft state fails closed if it no longer matches the skipped
+request path. This hotfix changes protected control/workflow paths and is itself
+ineligible; it requires manual review and manual squash merge.
+
+Failures emit only fixed diagnostic categories: `permission-or-repository-setting-rejection`,
+`pr-already-immediately-mergeable`, `stale-head-or-base`, `draft-or-closed-pr`,
+`auto-merge-unavailable`, `unexpected-github-response`, `invalid-review-or-eligibility`,
+or `required-checks-not-pending`. API status/known error patterns select these
+trusted strings; raw response bodies, exception text and model output are never
+included in diagnostics. Unknown failures use `unexpected-github-response`.
 
 ## Review decision and eligibility
 
@@ -104,7 +148,8 @@ severity `P0`–`P3`, file, nullable positive line bounds and an explanation.
 The publisher independently validates that schema with a small dependency-free
 validator that rejects unsupported schema keywords. Passing requires verdict
 `pass`, **confidence >= 0.95**, **zero blocking findings**, successful action/job
-completion and successful revocation. Every P0/P1 finding therefore fails, as do
+completion and successful revocation. Eligible ready PRs also require confirmed
+native squash auto-merge before successful checks. Every P0/P1 finding therefore fails, as do
 other blocking findings. Prose is never parsed as approval. Empty/malformed or
 masked/missing output, API/action error, timeout, and low confidence fail closed.
 Cancelled runs can leave an in-progress check, which also blocks merging; rerun
@@ -250,3 +295,28 @@ References: [official Codex Action documentation](https://developers.openai.com/
 [upstream security configuration](https://github.com/openai/codex-action/tree/86365089eb2b84e0a8fb0717b304f8bdcb13b20e),
 [GitHub native auto-merge](https://docs.github.com/en/pull-requests/collaborating-with-pull-requests/incorporating-changes-from-a-pull-request/automatically-merging-a-pull-request),
 [required status checks](https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/managing-protected-branches/about-protected-branches#require-status-checks-before-merging).
+
+
+## After manually installing the request-order hotfix
+
+1. Manually review and squash merge the hotfix PR, preserving branch protection.
+   This is an ineligible control change. A human merge to main follows the existing
+   production deployment workflow; that is a separate authorized operation.
+2. Synchronize PR #13's branch with current `main` (for example, GitHub's **Update
+   branch** action if available). That push must produce a new exact head and a
+   `synchronize` run using the corrected base workflow. A rerun of an old workflow
+   run is not a substitute for bringing the branch up to the new base.
+3. Observe `snapshot` → `disarm` → `eligibility`/`review` → `auto-merge` → `publish`.
+   During request/confirmation both custom checks must remain pending. Confirm
+   native squash auto-merge is enabled before they turn successful. Existing CI
+   and all required approvals remain authoritative; do not manually enable an
+   immediate merge or weaken required checks to force progress.
+4. If requesting/confirming fails, use only the fixed diagnostic category and
+   leave the checks blocked. Correct the external prerequisite separately and
+   rerun the complete trusted workflow on the current synchronized head.
+5. After GitHub performs an authorized merge, verify downstream workflow behavior.
+   The existing GITHUB_TOKEN event-suppression limitation and manual production
+   deployment fallback still apply; this hotfix adds no deployment dispatch.
+
+The implementation task does not synchronize or otherwise modify PR #13, change
+settings, install secrets, merge, deploy, or exercise a live auto-merge mutation.
