@@ -7,4 +7,5 @@ bookings.db-shm
 *.log
 .env
 *.key
+*.pem
 .DS_Store
