@@ -7,6 +7,7 @@ const { TextDecoder } = require('node:util');
 const policy = require('./policy.cjs');
 const { REPOSITORY, CHECKS, sha } = policy;
 const MAX_PROMPT = 600000;
+const FEEDBACK_MARKER = '<!-- dextech-codex-review-feedback:v1 -->';
 const fail = () => { throw new Error('Review control rejected the operation.'); };
 
 function expected(env) {
@@ -168,6 +169,73 @@ async function publish(env, api) {
   if (!passed || !classificationOK) fail();
 }
 
+function commentText(value) {
+  // Model output and candidate-controlled names are untrusted. Render plain text,
+  // suppress mentions/HTML and strip control characters before publishing.
+  return String(value).normalize('NFKC')
+    .replace(/[\p{Cc}\p{Cf}]/gu, ' ')
+    .replace(/([\\`*_[\]()#+.!|~{}$=-])/g, '\\$1')
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/@/g, '&#64;').replace(/:/g, '&#58;')
+    .trim();
+}
+
+function feedbackBody(result, match) {
+  if (result.confidence < policy.CONFIDENCE) return null;
+  if (result.verdict === 'fail' && result.blocking_findings.length > 0) {
+    const findings = result.blocking_findings.map((finding, index) => {
+      const location = finding.line_start === null ? '' :
+        `, line ${finding.line_start}${finding.line_end === null || finding.line_end === finding.line_start ? '' : `-${finding.line_end}`}`;
+      return `${index + 1}. **${finding.severity}** — ${commentText(finding.file)}${location}\n   ${commentText(finding.explanation)}`;
+    }).join('\n');
+    return `${FEEDBACK_MARKER}\n## Codex review feedback\n\n` +
+      `**Status:** Changes requested  \n**Reviewed head:** \`${match.head}\`  \n` +
+      `**Confidence:** ${result.confidence.toFixed(2)}\n\n### Blocking findings\n\n${findings}\n\n` +
+      `### Summary\n\n${commentText(result.summary)}\n\n` +
+      '_This feedback applies only to the exact head above. A new push requires a new review._';
+  }
+  if (result.verdict === 'pass' && result.confidence >= policy.CONFIDENCE && result.blocking_findings.length === 0) {
+    return `${FEEDBACK_MARKER}\n## Codex review feedback\n\n` +
+      `**Status:** Resolved by a clean exact-head review  \n**Reviewed head:** \`${match.head}\`  \n` +
+      `**Confidence:** ${result.confidence.toFixed(2)}\n\n` +
+      'The latest schema-validated review found no blocking findings. Previous feedback is superseded.';
+  }
+  return null;
+}
+
+async function publishFeedback(env, api) {
+  const match = expected(env);
+  const result = policy.reviewResult(env.REVIEW_JSON, env.REVIEW_RESULT);
+  if (result === null) return; // Infrastructure/format failures stay in the failed check; never publish raw output.
+  const body = feedbackBody(result, match);
+  if (body === null) return;
+  const pr = await api(`/repos/${REPOSITORY}/pulls/${match.number}`);
+  if (!policy.sameCandidate(pr, match)) fail();
+  const comments = [];
+  // Search every page before creating a comment; incomplete lookup fails closed.
+  for (let page = 1; ; page++) {
+    if (page > 100) fail();
+    const batch = await api(`/repos/${REPOSITORY}/issues/${match.number}/comments?per_page=100&page=${page}`);
+    if (!Array.isArray(batch) || batch.length > 100) fail();
+    comments.push(...batch);
+    if (batch.length < 100) break;
+  }
+  const managed = comments.filter(comment => Number.isSafeInteger(comment.id) &&
+    comment.user?.login === 'github-actions[bot]' && comment.user?.type === 'Bot' &&
+    typeof comment.body === 'string' && comment.body.startsWith(FEEDBACK_MARKER));
+  if (managed.length > 1) fail();
+  if (managed.length === 0 && result.verdict === 'pass') return;
+  // Recheck the exact head immediately before the only write. Comment writes
+  // have no atomic SHA precondition; the body always labels the reviewed head.
+  const current = await api(`/repos/${REPOSITORY}/pulls/${match.number}`);
+  if (!policy.sameCandidate(current, match)) fail();
+  if (managed.length === 1) {
+    await api(`/repos/${REPOSITORY}/issues/comments/${managed[0].id}`, 'PATCH', { body });
+  } else {
+    await api(`/repos/${REPOSITORY}/issues/${match.number}/comments`, 'POST', { body });
+  }
+}
+
 // A previously enabled request can survive a new push. Revoke it BEFORE any
 // successful final checks, including when the new change is now ineligible.
 // This fresh job has no model output, candidate checkout, or API key.
@@ -217,6 +285,7 @@ async function main(env) {
     case 'classify': return output(env, classifyCandidate(path.resolve('candidate'), expected(env)));
     case 'prepare': return prepare(path.resolve('candidate'), expected(env), env);
     case 'publish': return publish(env, client(env));
+    case 'feedback': return publishFeedback(env, client(env));
     case 'disarm': return disarmAutoMerge(env, client(env));
     case 'request': return requestAutoMerge(env, client(env));
     default: fail();
@@ -228,4 +297,5 @@ if (require.main === module) main(process.env).catch(() => {
   process.exitCode = 1;
 });
 
-module.exports = { expected, client, snapshot, candidate, readBlob, classifyCandidate, prepare, publish, disarmAutoMerge, requestAutoMerge };
+module.exports = { expected, client, snapshot, candidate, readBlob, classifyCandidate, prepare,
+  publish, commentText, feedbackBody, publishFeedback, disarmAutoMerge, requestAutoMerge };

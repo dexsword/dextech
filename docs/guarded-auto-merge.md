@@ -110,6 +110,19 @@ masked/missing output, API/action error, timeout, and low confidence fail closed
 Cancelled runs can leave an in-progress check, which also blocks merging; rerun
 the entire trusted workflow to recover. No `continue-on-error` path passes review.
 
+Valid structured failures with confidence >= 0.95 and blocking findings create or update one managed PR
+comment bound to the exact reviewed head. It contains only schema-validated
+severity, file/line, explanation, confidence and summary fields rendered as
+sanitized plain text. Model-supplied mentions, HTML and Markdown cannot render.
+A later clean high-confidence exact-head review updates the same comment to
+resolved. Malformed, missing, low-confidence or otherwise nonactionable output
+creates no comment. The feedback job is separate from the read-only reviewer and
+has only `contents: read` plus `pull-requests: write`. Comment discovery searches
+all pages (up to 10,000 comments); duplicate managed comments or an incomplete
+search fail closed. The PR head is rechecked immediately before writing. GitHub
+comment writes have no atomic head precondition, so feedback always labels the
+reviewed SHA and never authorizes a merge.
+
 Classification is deterministic, case-sensitive for the allowlist, with explicit
 case-insensitive sensitive-name exclusions. Both sides of renames and deletions
 are evaluated. Executable file modes, symlinks and submodules are ineligible.
@@ -158,8 +171,10 @@ budgets/alerts and monitor usage. Confidence is a model judgment, not a calibrat
 probability or substitute for tests/human approvals.
 
 Custom check summaries contain only sanitized metadata; raw model text is not
-copied to check summaries, comments or uploaded artifacts. The upstream action
-and Actions output/environment plumbing can put review text in Actions logs. Only public repository source is sent;
+copied to check summaries, comments or uploaded artifacts. Managed comments use
+only the bounded, schema-validated and escaped fields described above. The
+upstream action and Actions output/environment plumbing can put review text in
+Actions logs. Only public repository source is sent;
 do not commit sensitive information or enable debug tracing. Existing GitHub log
 retention/access controls apply. Temporary review files remain only on disposable
 runners. Production, SSH, Tailscale and Calendar credentials are never supplied.

@@ -172,6 +172,30 @@ jobs:
           ELIGIBLE: ${{ needs.eligibility.outputs.eligible }}
         run: node control/.github/codex/control.cjs publish
 
+  feedback:
+    if: ${{ always() && needs.snapshot.result == 'success' && needs.review.result == 'success' }}
+    needs: [snapshot, review, publish]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ needs.snapshot.outputs.base }}
+          persist-credentials: false
+          path: control
+      - name: Publish sanitized exact-head review feedback
+        env:
+          GH_TOKEN: ${{ github.token }}
+          HEAD_SHA: ${{ needs.snapshot.outputs.head }}
+          BASE_SHA: ${{ needs.snapshot.outputs.base }}
+          PR_NUMBER: ${{ needs.snapshot.outputs.number }}
+          REVIEW_JSON: ${{ needs.review.outputs.result }}
+          REVIEW_RESULT: ${{ needs.review.result }}
+        run: node control/.github/codex/control.cjs feedback
+
   auto-merge:
     if: >-
       needs.publish.outputs.passed == 'true' &&

@@ -107,6 +107,8 @@ test('schema rejects missing, malformed, extra, mistyped and low-confidence outp
     assert.equal(p.reviewPass(JSON.stringify(clean()), result), false);
   }
   assert.equal(p.validateSchema(clean(), { ...schema, unrecognized: true }), false);
+  assert.deepEqual(p.reviewResult(JSON.stringify(clean()), 'success'), clean());
+  assert.equal(p.reviewResult('not-json', 'success'), null);
 });
 
 test('any blocking finding fails; clean high-confidence verdict passes', () => {
@@ -203,6 +205,79 @@ test('publisher fails closed on review timeout but ineligibility alone stays neu
   }
 });
 
+test('valid blocking findings create one sanitized exact-head PR feedback comment', async () => {
+  const finding = { verdict: 'fail', confidence: 0.97, blocking_findings: [{
+    severity: 'P2', file: 'index.html', line_start: 599, line_end: 599,
+    explanation: 'Use <script> @owner [unsafe](https://example.invalid)\nthen fix the route.'
+  }], summary: 'A real & actionable finding.' };
+  const calls = [];
+  await c.publishFeedback({ ...env(), REVIEW_JSON: JSON.stringify(finding), REVIEW_RESULT: 'success' },
+    async (endpoint, method = 'GET', body) => {
+      calls.push({ endpoint, method, body });
+      if (endpoint.endsWith('/pulls/12')) return pr();
+      if (endpoint.endsWith('/issues/12/comments?per_page=100&page=1')) return [];
+      if (method === 'POST') return { id: 201 };
+      throw new Error('Unexpected mock request');
+    });
+  const write = calls.find(call => call.method === 'POST');
+  assert.equal(write.endpoint, '/repos/dexsword/dextech/issues/12/comments');
+  assert.match(write.body.body, /dextech-codex-review-feedback:v1/);
+  assert.match(write.body.body, new RegExp(head));
+  assert.match(write.body.body, /P2/);
+  assert.match(write.body.body, /index\\\.html/);
+  assert.match(write.body.body, /&lt;script&gt;/);
+  assert.match(write.body.body, /&#64;owner/);
+  assert.doesNotMatch(write.body.body, /\nthen|\[unsafe\]\(https/);
+  assert.equal(calls.filter(call => call.endpoint.endsWith('/pulls/12')).length, 2);
+});
+
+test('feedback updates its one bot comment and a clean review resolves it', async () => {
+  const existing = { id: 201, user: { login: 'github-actions[bot]', type: 'Bot' },
+    body: '<!-- dextech-codex-review-feedback:v1 -->\nold finding' };
+  const calls = [];
+  await c.publishFeedback({ ...env(), REVIEW_JSON: JSON.stringify(clean()), REVIEW_RESULT: 'success' },
+    async (endpoint, method = 'GET', body) => {
+      calls.push({ endpoint, method, body });
+      if (endpoint.endsWith('/pulls/12')) return pr();
+      if (endpoint.endsWith('/issues/12/comments?per_page=100&page=1')) return [existing];
+      if (method === 'PATCH') return { id: 201 };
+      throw new Error('Unexpected mock request');
+    });
+  const write = calls.find(call => call.method === 'PATCH');
+  assert.equal(write.endpoint, '/repos/dexsword/dextech/issues/comments/201');
+  assert.match(write.body.body, /Status:\*\* Resolved by a clean exact-head review/);
+  assert.equal(calls.some(call => call.method === 'POST'), false);
+});
+
+test('feedback does not publish malformed, nonactionable, clean-first or stale results', async () => {
+  for (const raw of ['not-json', JSON.stringify({ ...clean(), confidence: 0.5 }),
+    JSON.stringify({ ...clean(), verdict: 'fail' })]) {
+    let called = false;
+    await c.publishFeedback({ ...env(), REVIEW_JSON: raw, REVIEW_RESULT: 'success' },
+      async () => { called = true; });
+    assert.equal(called, false);
+  }
+
+  let writes = 0;
+  await c.publishFeedback({ ...env(), REVIEW_JSON: JSON.stringify(clean()), REVIEW_RESULT: 'success' },
+    async (endpoint, method = 'GET') => {
+      if (method !== 'GET') writes++;
+      if (endpoint.endsWith('/pulls/12')) return pr();
+      if (endpoint.endsWith('/issues/12/comments?per_page=100&page=1')) return [];
+      throw new Error('Unexpected mock request');
+    });
+  assert.equal(writes, 0);
+
+  const stale = pr(); stale.head.sha = base;
+  await assert.rejects(c.publishFeedback({ ...env(), REVIEW_JSON: JSON.stringify({
+    ...clean(), verdict: 'fail', blocking_findings: [{ severity: 'P2', file: 'script.js',
+      line_start: null, line_end: null, explanation: 'Fix it.' }]
+  }), REVIEW_RESULT: 'success' }, async endpoint => {
+    if (endpoint.endsWith('/pulls/12')) return stale;
+    throw new Error('Unexpected mock request');
+  }));
+});
+
 test('Git object review rejects symlinks and classifies both sides of protected renames', t => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'dextech-review-git-'));
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
@@ -241,6 +316,11 @@ test('workflow trust boundaries, final Codex step, pins and self-exclusion remai
   assert.match(workflow, /needs\.publish\.outputs\.passed == 'true'/);
   assert.match(workflow, /needs\.publish\.outputs\.eligible == 'true'/);
   assert.match(workflow, /github\.event\.pull_request\.draft == false/);
+  const feedback = workflow.split('\n  feedback:')[1].split('\n  auto-merge:')[0];
+  assert.match(feedback, /needs: \[snapshot, review, publish\]/);
+  assert.match(feedback, /permissions:\n      contents: read\n      pull-requests: write\n/);
+  assert.doesNotMatch(feedback, /OPENAI_API_KEY|checks: write|contents: write/);
+  assert.match(feedback, /control\.cjs feedback/);
   const config = fs.readFileSync(path.join(__dirname, '../.github/codex/config.toml'), 'utf8');
   for (const feature of ['shell_tool', 'unified_exec', 'js_repl', 'multi_agent', 'plugins', 'hooks', 'browser_use']) {
     assert.match(config, new RegExp(`^${feature} = false$`, 'm'));
@@ -377,4 +457,58 @@ test('full history fixes shallow exact-head ancestry while non-descendants still
   assert.equal(git(source, 'rev-parse', '--is-shallow-repository'), 'false');
   assert.throws(() => c.candidate(source, { base: trustedBase, head: nonDescendant }),
     error => error.status === 1);
+});
+
+test('feedback rejects low-confidence blocking failures and strips rendering controls', async () => {
+  const result = { ...clean(), verdict: 'fail', confidence: 0.5, blocking_findings: [{
+    severity: 'P1', file: '`@owner`<img>.js', line_start: 1, line_end: 1,
+    explanation: 'https://example.invalid\u202e\u0085<script> @owner'
+  }] };
+  await c.publishFeedback({ ...env(), REVIEW_JSON: JSON.stringify(result), REVIEW_RESULT: 'success' },
+    async () => { assert.fail('Low-confidence output must not call GitHub'); });
+  assert.equal(p.reviewPass(JSON.stringify(result), 'success'), false);
+  const body = c.feedbackBody({ ...result, confidence: 0.97 }, expected);
+  assert.equal(c.commentText('~~$x$~~'), String.raw`\~\~\$x\$\~\~`);
+  assert.match(body, /— \\`&#64;owner\\`&lt;img&gt;/);
+  assert.doesNotMatch(body, /[\u202e\u0085]|<img>|<script>|https:|@owner/);
+});
+
+test('feedback finds its managed comment on later pages and checks the head before updating', async () => {
+  const managed = { id: 999, user: { login: 'github-actions[bot]', type: 'Bot' },
+    body: '<!-- dextech-codex-review-feedback:v1 -->\nold finding' };
+  for (const stale of [false, true]) {
+    let reads = 0;
+    const writes = [];
+    const api = async (endpoint, method = 'GET', body) => {
+      if (method !== 'GET') { writes.push({ endpoint, method, body }); return {}; }
+      if (endpoint.endsWith('/pulls/12')) {
+        const current = pr();
+        if (++reads === 2 && stale) current.head.sha = base;
+        return current;
+      }
+      if (endpoint.endsWith('page=1')) return Array(100).fill({ id: 1, body: 'ordinary comment' });
+      if (endpoint.endsWith('page=2')) return [managed];
+      assert.fail('Unexpected API call');
+    };
+    const task = c.publishFeedback({ ...env(), REVIEW_JSON: JSON.stringify(clean()), REVIEW_RESULT: 'success' }, api);
+    if (stale) await assert.rejects(task);
+    else await task;
+    assert.equal(reads, 2);
+    assert.equal(writes.length, stale ? 0 : 1);
+    if (!stale) {
+      assert.equal(writes[0].method, 'PATCH');
+      assert.equal(writes[0].endpoint, '/repos/dexsword/dextech/issues/comments/999');
+    }
+  }
+});
+
+test('duplicate managed comments fail closed instead of creating or updating feedback', async () => {
+  const managed = { id: 999, user: { login: 'github-actions[bot]', type: 'Bot' },
+    body: '<!-- dextech-codex-review-feedback:v1 -->\nold finding' };
+  await assert.rejects(c.publishFeedback({ ...env(), REVIEW_JSON: JSON.stringify(clean()), REVIEW_RESULT: 'success' },
+    async (endpoint, method = 'GET') => {
+      assert.equal(method, 'GET');
+      if (endpoint.endsWith('/pulls/12')) return pr();
+      return [managed, { ...managed, id: 1000 }];
+    }));
 });

@@ -89,13 +89,18 @@ function validateSchema(value, rule) {
   return true;
 }
 
-function reviewPass(raw, actionResult) {
+function reviewResult(raw, actionResult) {
   try {
-    if (actionResult !== 'success' || typeof raw !== 'string' || !raw.trim() || Buffer.byteLength(raw) > 32000) return false;
+    if (actionResult !== 'success' || typeof raw !== 'string' || !raw.trim() || Buffer.byteLength(raw) > 32000) return null;
     const result = JSON.parse(raw);
-    return validateSchema(result, schema) && result.verdict === 'pass' &&
-      result.confidence >= CONFIDENCE && result.blocking_findings.length === 0;
-  } catch { return false; }
+    return validateSchema(result, schema) ? result : null;
+  } catch { return null; }
+}
+
+function reviewPass(raw, actionResult) {
+  const result = reviewResult(raw, actionResult);
+  return result !== null && result.verdict === 'pass' &&
+    result.confidence >= CONFIDENCE && result.blocking_findings.length === 0;
 }
 
 function sameCandidate(pr, expected, requireReady = false) {
@@ -111,4 +116,4 @@ function mayRequest(pr, expected, gate, eligible) {
 }
 
 module.exports = { REPOSITORY, CONFIDENCE, CHECKS, sha, pathClass, classify,
-  narrowLockUpdate, validateSchema, reviewPass, sameCandidate, mayRequest };
+  narrowLockUpdate, validateSchema, reviewResult, reviewPass, sameCandidate, mayRequest };
