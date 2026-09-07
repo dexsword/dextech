@@ -143,8 +143,11 @@ HTTPS vhost on DexServe must proxy `/cancel` to Node; GitHub Actions and
 Exact destination: `/etc/apache2/sites-available/dextech.conf` (the HTTPS
 `<VirtualHost *:443>` enabled via `sites-enabled/dextech.conf`).
 
-Repo-owned snippet: `ops/deployment/apache-cancel-proxy.conf`. It is the two
-ProxyPass lines to paste or `Include` next to the existing `/admin` pair:
+Repo-owned snippet: `ops/deployment/apache-cancel-proxy.conf`. Paste those two
+lines into `dextech.conf` next to the existing `/admin` pair. Do **not**
+`Include` this snippet (or any other separate file) for `/cancel`:
+`protected_snapshot()` / `verify_protected()` only compare live
+`/etc/apache2/sites-available/dextech.conf`. A side file would not be covered.
 
 ```
 ProxyPass /cancel http://localhost:3000/cancel
@@ -156,8 +159,8 @@ Do not add Location blocks. Query strings are preserved by this ProxyPass form.
 As root, when no deploy is running:
 
 ```sh
-# 1. Edit the HTTPS vhost and add the two lines (or Include a root-owned copy
-#    of apache-cancel-proxy.conf) next to the /admin ProxyPass pair.
+# 1. Edit /etc/apache2/sites-available/dextech.conf and paste the two lines
+#    next to the /admin ProxyPass pair (inline in this file only).
 # 2. Syntax-check, then reload Apache without dropping the TLS vhost.
 apache2ctl configtest
 systemctl reload apache2

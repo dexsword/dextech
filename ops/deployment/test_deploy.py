@@ -25,8 +25,16 @@ OLD = 'b' * 40
 
 class Controls(unittest.TestCase):
     def test_public_html_probes_include_cancel(self):
-        source = Path(__file__).with_name('deploy.py').read_text()
-        self.assertIn("for path in ['/', '/support.html', '/admin', '/cancel']:", source)
+        urls = []
+        with patch.object(d, 'http', side_effect=lambda url, sha=None: urls.append(url)):
+            d.probe_public_html()
+        self.assertEqual(urls, [
+            'https://dextech.cloud/',
+            'https://dextech.cloud/support.html',
+            'https://dextech.cloud/admin',
+            'https://dextech.cloud/cancel',
+        ])
+        self.assertIn('probe_public_html', d.gates.__code__.co_names)
 
     def test_forced_command(self):
         self.assertEqual(s.parse(['-c', s.ENTRY], 'deploy ' + SHA), SHA)
