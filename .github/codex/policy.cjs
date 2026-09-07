@@ -4,6 +4,7 @@ const schema = require('./review.schema.json');
 const REPOSITORY = 'dexsword/dextech';
 const CONFIDENCE = 0.95;
 const CHECKS = { gate: 'Codex Review / gate', eligible: 'Auto Merge / eligible' };
+const NATIVE_GATE = 'merge-gate';
 const sha = value => typeof value === 'string' && /^[a-f0-9]{40}$/.test(value);
 const plain = value => value !== null && typeof value === 'object' && !Array.isArray(value);
 
@@ -115,5 +116,5 @@ function mayRequest(pr, expected, gate, eligible) {
   return sameCandidate(pr, expected, true) && gate === true && eligible === true;
 }
 
-module.exports = { REPOSITORY, CONFIDENCE, CHECKS, sha, pathClass, classify,
+module.exports = { REPOSITORY, CONFIDENCE, CHECKS, NATIVE_GATE, sha, pathClass, classify,
   narrowLockUpdate, validateSchema, reviewResult, reviewPass, sameCandidate, mayRequest };
