@@ -855,8 +855,8 @@ test('snapshot uses the live synthetic merge SHA and never falls back to the eve
   for (const invalid of [{ merge_commit_sha: null }, { mergeable: null }, { mergeable: false }]) {
     await assert.rejects(c.snapshot(values, async (url, method) => {
       assert.notEqual(method, 'POST');
-      return { ...pr(), ...invalid };
-    }));
+      return mergeResponse(url) || { ...pr(), ...invalid };
+    }, async () => {}));
   }
 });
 
@@ -871,4 +871,67 @@ test('workflow carries the merge SHA and confirmation without changing exact-hea
   assert.match(workflow, /confirmed_merge: \$\{\{ steps.request.outputs.confirmed_merge \}\}/);
   assert.doesNotMatch(workflow, /ref: \$\{\{ needs.snapshot.outputs.merge \}\}/);
   assert.equal(p.classify(['.github/codex/control.cjs', '.github/workflows/codex-review.yml']).eligible, false);
+});
+
+test('snapshot retries transient merge discovery with bounded backoff before creating checks', async t => {
+  for (const condition of ['unknown', 'missing-sha', 'ref-404', 'commit-404', 'final-read-unknown', 'exhausted',
+    'stale-head', 'stale-base', 'conflict', 'permission', 'wrong-parents', 'malformed']) {
+    await t.test(condition, async t => {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'dextech-discovery-'));
+      t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+      fs.writeFileSync(path.join(dir, 'event'), JSON.stringify({ pull_request: pr() }));
+      const values = { ...env(), GITHUB_EVENT_PATH: path.join(dir, 'event'), GITHUB_OUTPUT: path.join(dir, 'output'),
+        GITHUB_SHA: base, GITHUB_REPOSITORY: p.REPOSITORY, GITHUB_EVENT_NAME: 'pull_request_target' };
+      const delays = [], writes = [];
+      let reads = 0;
+      const api = c.client({ GH_TOKEN: 'non-secret-test-placeholder' }, async (url, options) => {
+        const endpoint = new URL(url).pathname;
+        let result = mergeResponse(endpoint) || pr();
+        let status = 200;
+        if (options.method === 'POST') {
+          writes.push(JSON.parse(options.body));
+          assert.equal(delays.length, 1);
+          result = { id: 100 + writes.length };
+        } else if (endpoint.endsWith('/pulls/12')) {
+          reads++;
+          if (delays.length === 0 || condition === 'exhausted') {
+            if (['unknown', 'exhausted', 'stale-head', 'stale-base'].includes(condition)) result.mergeable = null;
+            if (condition === 'missing-sha') result.merge_commit_sha = null;
+            if (condition === 'final-read-unknown' && reads === 2) result.mergeable = null;
+            if (condition === 'conflict') result.mergeable = false;
+            if (condition === 'malformed') result.merge_commit_sha = 'untrusted-invalid';
+            if (condition === 'permission') status = 403;
+          } else if (condition === 'stale-head') result.head.sha = 'c'.repeat(40);
+        }
+        if (delays.length && condition === 'stale-base' && endpoint.endsWith('/heads/main')) result.object.sha = 'c'.repeat(40);
+        if (!delays.length && ((condition === 'ref-404' && endpoint.endsWith('/pull/12/merge')) ||
+            (condition === 'commit-404' && endpoint.includes('/git/commits/')))) status = 404;
+        if (condition === 'wrong-parents' && endpoint.includes('/git/commits/')) result.parents.reverse();
+        return { status, ok: status === 200, json: async () => {
+          assert.equal(status, 200, 'rejected HTTP bodies must not be parsed');
+          return result;
+        } };
+      });
+      const run = () => c.snapshot(values, api, async ms => { assert.equal(writes.length, 0); delays.push(ms); });
+      if (['unknown', 'missing-sha', 'ref-404', 'commit-404', 'final-read-unknown'].includes(condition)) {
+        await run();
+        assert.deepEqual(delays, [1000]);
+        assert.equal(writes.length, 2);
+        assert.ok(writes.every(check => check.head_sha === merge && check.status === 'in_progress'));
+        assert.match(fs.readFileSync(values.GITHUB_OUTPUT, 'utf8'), new RegExp(`head=${head}\\nbase=${base}\\nmerge=${merge}`));
+      } else {
+        await assert.rejects(run(), error => {
+          const category = condition === 'exhausted' ? 'merge-candidate-discovery-timeout' :
+            condition.startsWith('stale-') ? 'stale-head-or-base' :
+              condition === 'permission' ? 'permission-or-repository-setting-rejection' : 'stale-or-unavailable-merge-candidate';
+          assert.equal(c.diagnostic(error), `Review control failed closed: ${category}.`);
+          return true;
+        });
+        assert.equal(writes.length, 0);
+        assert.equal(fs.existsSync(values.GITHUB_OUTPUT), false);
+        assert.deepEqual(delays, condition === 'exhausted' ? [1000, 2000, 4000, 8000, 15000, 30000] :
+          condition.startsWith('stale-') ? [1000] : []);
+      }
+    });
+  }
 });

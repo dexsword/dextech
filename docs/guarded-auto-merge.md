@@ -171,8 +171,18 @@ same merge SHA. The existing ancestry gate still requires base to be an ancestor
 of the reviewed source head. No synthetic-merge scripts are executed: candidate
 checkout stays on `HEAD_SHA`, and `expectedHeadOid` still uses `HEAD_SHA`.
 
-Missing/unknown mergeability, an absent merge ref, inconsistent parents, or any
-head/base/merge change fails closed. Never substitute the source head for a missing
+Initial snapshot discovery retries GitHub's transient `mergeable: null`, missing
+merge SHA, and HTTP 404 for the merge ref/commit, with backoff of 1, 2, 4, 8, 15,
+and 30 seconds (seven attempts, 60 seconds of waiting). Every attempt rechecks the
+captured source head and current main base; neither binding can change. No check
+is created until the merge ref, ordered parents, and final PR read validate.
+Confirmed conflicts, malformed metadata, inconsistent parents, permission failures,
+and head/base changes stop immediately. The existing five-minute snapshot job
+limit and 20-second request timeout also bound API delays. Exhaustion reports only
+`merge-candidate-discovery-timeout`; prolonged unavailability requires a fresh run.
+
+Once discovery succeeds, the merge SHA is frozen. Later unknown mergeability,
+an absent merge ref, inconsistent parents, or any head/base/merge change fails closed. Never substitute the source head for a missing
 merge candidate, reuse an old merge receipt, or silently recapture a different
 candidate mid-run. Start a fresh trusted run once GitHub has a valid candidate.
 GitHub has no atomic merge-candidate precondition on enable-auto-merge/check writes;

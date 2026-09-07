@@ -13,6 +13,7 @@ const DIAGNOSTICS = Object.freeze({
   mergeable: 'pr-already-immediately-mergeable',
   stale: 'stale-head-or-base',
   merge: 'stale-or-unavailable-merge-candidate',
+  discovery: 'merge-candidate-discovery-timeout',
   inactive: 'draft-or-closed-pr',
   unavailable: 'auto-merge-unavailable',
   unexpected: 'unexpected-github-response',
@@ -22,6 +23,11 @@ const DIAGNOSTICS = Object.freeze({
 class ControlFailure extends Error {
   constructor(category) { super('Review control rejected the operation.'); this.category = category; }
 }
+class MergePending extends ControlFailure {
+  constructor() { super('merge'); }
+}
+const DISCOVERY_DELAYS = Object.freeze([1000, 2000, 4000, 8000, 15000, 30000]);
+const wait = ms => new Promise(resolve => setTimeout(resolve, ms));
 const fail = (category = 'unexpected') => { throw new ControlFailure(category); };
 function diagnostic(error) {
   const category = error instanceof ControlFailure && Object.hasOwn(DIAGNOSTICS, error.category) ? error.category : 'unexpected';
@@ -65,7 +71,10 @@ function client(env, fetcher = fetch) {
     });
     // Never log response bodies, exception text, headers or credential values.
     if ([401, 403].includes(response.status)) fail('permission');
-    if (response.status === 404) fail(endpoint.includes('/git/ref/pull/') || endpoint.includes('/git/commits/') ? 'merge' : 'unavailable');
+    if (response.status === 404) {
+      if (method === 'GET' && /^\/repos\/dexsword\/dextech\/git\/(?:ref\/pull\/[1-9][0-9]*\/merge|commits\/[a-f0-9]{40})$/.test(endpoint)) throw new MergePending();
+      fail('unavailable');
+    }
     const result = await response.json();
     if (result?.errors) apiFailure(result.errors);
     if (!response.ok || !result || typeof result !== 'object') fail();
@@ -78,17 +87,37 @@ function binding(env, match) {
   return `${env.GITHUB_RUN_ID}:${env.GITHUB_RUN_ATTEMPT}:${match.head}:${match.merge}:${match.base}`;
 }
 
-async function snapshot(env, api) {
+// Retry readiness only before freezing the merge binding or creating any checks.
+// Captured source/base identity never changes, including across retries.
+async function discoverMerge(api, match, sleep) {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      const main = await api(`/repos/${REPOSITORY}/git/ref/heads/main`);
+      if (main.object?.sha !== match.base) fail('stale');
+      const current = await api(`/repos/${REPOSITORY}/pulls/${match.number}`);
+      if (!policy.sameCandidate(current, match)) fail('stale');
+      if (current.mergeable === false) fail('merge');
+      if (current.mergeable === null ||
+          (current.mergeable === true && current.merge_commit_sha == null)) throw new MergePending();
+      if (current.mergeable !== true || !sha(current.merge_commit_sha)) fail('merge');
+      const discovered = { ...match, merge: current.merge_commit_sha };
+      await currentCandidate(api, discovered, false, true);
+      return discovered.merge;
+    } catch (error) {
+      if (!(error instanceof MergePending)) throw error;
+      if (attempt === DISCOVERY_DELAYS.length) fail('discovery');
+      await sleep(DISCOVERY_DELAYS[attempt]);
+    }
+  }
+}
+
+async function snapshot(env, api, sleep = wait) {
   const event = JSON.parse(fs.readFileSync(env.GITHUB_EVENT_PATH, 'utf8'));
   const pr = event.pull_request;
   const match = { number: pr?.number, head: pr?.head?.sha, base: env.GITHUB_SHA };
   if (env.GITHUB_REPOSITORY !== REPOSITORY || env.GITHUB_EVENT_NAME !== 'pull_request_target' ||
       !Number.isSafeInteger(match.number) || !policy.sameCandidate(pr, match)) fail();
-  const current = await api(`/repos/${REPOSITORY}/pulls/${match.number}`);
-  if (!policy.sameCandidate(current, match)) fail();
-  if (current.mergeable !== true || !sha(current.merge_commit_sha)) fail('merge');
-  match.merge = current.merge_commit_sha;
-  await currentCandidate(api, match);
+  match.merge = await discoverMerge(api, match, sleep);
   const ids = {};
   for (const kind of ['gate', 'eligible']) {
     const check = await api(`/repos/${REPOSITORY}/check-runs`, 'POST', {
@@ -298,7 +327,7 @@ async function pendingChecks(env, api, match) {
   return ids;
 }
 
-async function currentCandidate(api, match, ready = false) {
+async function currentCandidate(api, match, ready = false, discovering = false) {
   const main = await api(`/repos/${REPOSITORY}/git/ref/heads/main`);
   if (main.object?.sha !== match.base) fail('stale');
   // GitHub owns this synthetic ref. Never fall back to the source head, a
@@ -313,6 +342,7 @@ async function currentCandidate(api, match, ready = false) {
   const pr = await api(`/repos/${REPOSITORY}/pulls/${match.number}`);
   if (pr.state !== 'open' || (ready && pr.draft !== false)) fail('inactive');
   if (!policy.sameCandidate(pr, match) || typeof pr.node_id !== 'string') fail('stale');
+  if (discovering && (pr.mergeable === null || (pr.mergeable === true && pr.merge_commit_sha == null))) throw new MergePending();
   if (pr.mergeable !== true || pr.merge_commit_sha !== match.merge) fail('merge');
   return pr;
 }
