@@ -8,17 +8,41 @@ const { execFileSync } = require('node:child_process');
 const p = require('../.github/codex/policy.cjs');
 const c = require('../.github/codex/control.cjs');
 const schema = require('../.github/codex/review.schema.json');
-const base = 'a'.repeat(40), head = 'b'.repeat(40);
-const expected = { number: 12, base, head };
-const pr = () => ({ number: 12, node_id: 'PR_fixture', state: 'open', draft: false,
+const base = 'a'.repeat(40), head = 'b'.repeat(40), merge = 'e'.repeat(40);
+const expected = { number: 12, base, head, merge };
+const pr = () => ({ number: 12, node_id: 'PR_fixture', state: 'open', draft: false, mergeable: true, merge_commit_sha: merge,
   base: { repo: { full_name: 'dexsword/dextech' }, ref: 'main', sha: base },
   head: { repo: { full_name: 'dexsword/dextech' }, sha: head } });
 const clean = () => ({ verdict: 'pass', confidence: 0.97, blocking_findings: [], summary: 'Correct patch.' });
-const env = () => ({ HEAD_SHA: head, BASE_SHA: base, PR_NUMBER: '12', GITHUB_RUN_ID: '123',
+const env = () => ({ HEAD_SHA: head, BASE_SHA: base, MERGE_SHA: merge, PR_NUMBER: '12', GITHUB_RUN_ID: '123',
   GITHUB_RUN_ATTEMPT: '1', GATE_ID: '101', ELIGIBLE_ID: '102', ELIGIBLE: 'true',
   AUTO_MERGE_RESULT: 'skipped', DISARM_RESULT: 'success', ELIGIBILITY_RESULT: 'success', REVIEW_RESULT: 'success', REVIEW_JSON: JSON.stringify(clean()) });
-const check = kind => ({ name: p.CHECKS[kind], head_sha: head, external_id: `123:1:${head}`,
+const check = kind => ({ name: p.CHECKS[kind], head_sha: head, external_id: `dextech:12:123:1:${head}:${base}`,
   app: { slug: 'github-actions' }, status: 'in_progress', conclusion: null });
+
+function readiness(current = pr()) {
+  const native = { name: 'checks', status: 'COMPLETED', conclusion: 'SUCCESS', isRequired: true,
+    checkSuite: { app: { databaseId: 15368, slug: 'github-actions' } } };
+  return { data: { repository: { autoMergeAllowed: true, squashMergeAllowed: true, pullRequest: {
+    headRefOid: current.head.sha, baseRefOid: current.base.sha, state: current.state.toUpperCase(),
+    isDraft: current.draft, mergeable: 'MERGEABLE', reviewDecision: null,
+    reviewThreads: { pageInfo: { hasNextPage: false }, nodes: [] },
+    commits: { nodes: [{ commit: { oid: head, statusCheckRollup: { contexts: {
+      pageInfo: { hasNextPage: false }, nodes: [native, ...Object.values(p.CHECKS).map(name =>
+        ({ ...native, name, status: 'IN_PROGRESS', conclusion: null }))]
+    } } } }] }, potentialMergeCommit: { oid: merge, statusCheckRollup: null }
+  } } } };
+}
+
+function mergeResponse(endpoint) {
+  if (endpoint.includes('/actions/workflows/')) return { workflow_runs: [{ id: 123, display_title: 'Codex review PR #12' }] };
+  if (endpoint.endsWith('/actions/runs/123')) return { status: 'in_progress', run_attempt: 1, path: '.github/workflows/codex-review.yml' };
+  if (endpoint.includes('/check-runs?')) return { total_count: 0, check_runs: [] };
+  if (endpoint.endsWith('/git/ref/heads/main')) return { object: { sha: base } };
+  if (endpoint.endsWith('/git/ref/pull/12/merge')) return { ref: 'refs/pull/12/merge', object: { type: 'commit', sha: merge } };
+  if (endpoint.endsWith(`/git/commits/${merge}`)) return { sha: merge, parents: [{ sha: base }, { sha: head }] };
+  return null;
+}
 
 function mockAPI(current = pr(), transform = value => value) {
   const calls = [];
@@ -26,8 +50,9 @@ function mockAPI(current = pr(), transform = value => value) {
     calls.push({ endpoint, method, body });
     if (endpoint.endsWith('/check-runs/101')) return transform(check('gate'));
     if (endpoint.endsWith('/check-runs/102')) return transform(check('eligible'));
-    if (endpoint.endsWith('/git/ref/heads/main')) return { object: { sha: base } };
+    if (mergeResponse(endpoint)) return mergeResponse(endpoint);
     if (endpoint.endsWith('/pulls/12')) return current;
+    if (endpoint === '/graphql' && body.query.startsWith('query')) return readiness(current);
     if (endpoint === '/graphql') {
       current.auto_merge = { merge_method: 'squash' };
       return { data: { enablePullRequestAutoMerge: { pullRequest: { id: current.node_id, headRefOid: head, autoMergeRequest: { mergeMethod: 'SQUASH' } } } } };
@@ -139,7 +164,7 @@ test('fork, draft, wrong repository/base, closed and stale PR cannot request aut
     const current = pr(); mutate(current);
     const mock = mockAPI(current);
     await assert.rejects(c.requestAutoMerge(env(), mock.api));
-    assert.equal(mock.calls.some(call => call.method !== 'GET'), false);
+    assert.equal(mock.calls.some(call => call.body?.query?.startsWith('mutation')), false);
   }
   assert.equal(p.mayRequest(pr(), expected, false, true), false);
   assert.equal(p.mayRequest(pr(), expected, true, false), false);
@@ -153,7 +178,7 @@ test('gate IDs, run attempt, exact SHA and pending state are rechecked before an
   ]) {
     const mock = mockAPI(pr(), mutate);
     await assert.rejects(c.requestAutoMerge(env(), mock.api));
-    assert.equal(mock.calls.some(call => call.method !== 'GET'), false);
+    assert.equal(mock.calls.some(call => call.body?.query?.startsWith('mutation')), false);
   }
 });
 
@@ -161,14 +186,14 @@ test('native squash auto-merge waits on GitHub protections and atomically binds 
   const mock = mockAPI();
   // No immediate merge endpoint, approvals, admin bypass, or simulated CI passes.
   await c.requestAutoMerge(env(), mock.api);
-  const writes = mock.calls.filter(call => call.method !== 'GET');
+  const writes = mock.calls.filter(call => call.body?.query?.startsWith('mutation'));
   assert.equal(writes.length, 1);
   assert.equal(writes[0].endpoint, '/graphql');
   assert.match(writes[0].body.query, /enablePullRequestAutoMerge/);
   assert.match(writes[0].body.query, /expectedHeadOid: \$head, mergeMethod: SQUASH/);
   assert.doesNotMatch(writes[0].body.query, /\bmergePullRequest\b|bypass|approve/);
   assert.equal(writes[0].body.variables.head, head);
-  assert.equal(mock.calls[mock.calls.findIndex(call => call.method === 'POST') - 1].endpoint, '/repos/dexsword/dextech/pulls/12');
+  assert.equal(mock.calls[mock.calls.findIndex(call => call.body?.query?.startsWith('mutation')) - 1].endpoint, '/repos/dexsword/dextech/pulls/12');
   // GitHub rejecting native auto-merge must fail; no direct merge fallback.
   const failing = mockAPI();
   await assert.rejects(c.requestAutoMerge(env(), async (...args) => {
@@ -196,7 +221,7 @@ test('publisher fails closed on review timeout but ineligibility alone stays neu
     const writes = [];
     const api = async (endpoint, method, body) => {
       if (method === 'PATCH') { writes.push(body); return {}; }
-      if (endpoint.endsWith('/git/ref/heads/main')) return { object: { sha: base } };
+      if (mergeResponse(endpoint)) return mergeResponse(endpoint);
       if (endpoint.endsWith('/pulls/12')) return pr();
       return check(endpoint.endsWith('101') ? 'gate' : 'eligible');
     };
@@ -251,7 +276,7 @@ test('feedback updates its one bot comment and a clean review resolves it', asyn
   const write = calls.find(call => call.method === 'PATCH');
   assert.equal(write.endpoint, '/repos/dexsword/dextech/issues/comments/201');
   assert.match(write.body.body, /Status:\*\* Resolved by a clean exact-head review/);
-  assert.equal(calls.some(call => call.method === 'POST'), false);
+  assert.equal(calls.some(call => call.body?.query?.startsWith('mutation')), false);
 });
 
 test('feedback does not publish malformed, nonactionable, clean-first or stale results', async () => {
@@ -306,7 +331,7 @@ test('workflow trust boundaries, final Codex step, pins and self-exclusion remai
   assert.match(workflow, /pull_request_target:/);
   assert.match(workflow, /branches: \[main\]/);
   assert.match(workflow, /head\.repo\.full_name == 'dexsword\/dextech'/);
-  assert.match(workflow, /cancel-in-progress: false/);
+  assert.match(workflow, /cancel-in-progress: true/);
   assert.doesNotMatch(workflow, /persist-credentials: true|pull_request:\s|continue-on-error|secrets\.(?!OPENAI_API_KEY)/);
   for (const use of workflow.matchAll(/uses: ([^\s]+)/g)) assert.match(use[1], /@[a-f0-9]{40}$/);
   const review = workflow.split('\n  review:')[1].split('\n  disarm:')[0];
@@ -320,7 +345,7 @@ test('workflow trust boundaries, final Codex step, pins and self-exclusion remai
   assert.equal(p.classify(['.github/workflows/codex-review.yml']).eligible, false);
   assert.match(workflow, /needs\.review\.result == 'success'/);
   assert.match(workflow, /needs\.eligibility\.outputs\.eligible == 'true'/);
-  assert.match(workflow, /github\.event\.pull_request\.draft == false/);
+  assert.match(workflow, /needs\.snapshot\.outputs\.draft == 'false'/);
   const feedback = workflow.split('\n  feedback:')[1].split('\n  auto-merge:')[0];
   assert.match(feedback, /needs: \[snapshot, review, publish\]/);
   assert.match(feedback, /permissions:\n      contents: read\n      pull-requests: write\n/);
@@ -382,7 +407,7 @@ test('failed revocation prevents a clean high-confidence review from passing', a
   const writes = [];
   const api = async (endpoint, method, body) => {
     if (method === 'PATCH') { writes.push(body); return {}; }
-    if (endpoint.endsWith('/git/ref/heads/main')) return { object: { sha: base } };
+    if (mergeResponse(endpoint)) return mergeResponse(endpoint);
       if (endpoint.endsWith('/pulls/12')) return pr();
       return check(endpoint.endsWith('101') ? 'gate' : 'eligible');
   };
@@ -392,7 +417,7 @@ test('failed revocation prevents a clean high-confidence review from passing', a
   assert.equal(writes[0].conclusion, 'failure');
 });
 
-test('snapshot creates pending required checks on the PR head, with trusted run binding', async t => {
+test('snapshot creates pending checks on the source head before discovering the merge candidate', async t => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'dextech-review-snapshot-'));
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
   fs.writeFileSync(path.join(dir, 'event.json'), JSON.stringify({ pull_request: pr() }));
@@ -401,11 +426,12 @@ test('snapshot creates pending required checks on the PR head, with trusted run 
     GITHUB_OUTPUT: path.join(dir, 'output'), GITHUB_SHA: base,
     GITHUB_REPOSITORY: 'dexsword/dextech', GITHUB_EVENT_NAME: 'pull_request_target' },
   async (endpoint, method, body) => {
-    if (method === 'POST') { writes.push(body); return { id: 100 + writes.length }; }
+    if (method === 'POST') { writes.push(body); return { ...body, id: 100 + writes.length, conclusion: null }; }
+    if (mergeResponse(endpoint)) return mergeResponse(endpoint);
     assert.equal(endpoint, '/repos/dexsword/dextech/pulls/12'); return pr();
   });
   assert.deepEqual(writes.map(x => x.name), [p.CHECKS.gate, p.CHECKS.eligible]);
-  assert.ok(writes.every(x => x.head_sha === head && x.status === 'in_progress' && x.external_id === `123:1:${head}`));
+  assert.ok(writes.every(x => x.head_sha === head && x.status === 'in_progress' && x.external_id === `dextech:12:123:1:${head}:${base}`));
   assert.match(fs.readFileSync(path.join(dir, 'output'), 'utf8'), new RegExp(`head=${head}`));
 });
 
@@ -573,7 +599,9 @@ function orderAPI({ existing, rejectRequest = false, badMutation = false, unconf
       }
     }
     if (endpoint.endsWith('/git/ref/heads/main')) return { object: { sha: changedMain ? 'c'.repeat(40) : base } };
+    if (mergeResponse(endpoint)) return mergeResponse(endpoint);
     if (endpoint.endsWith('/pulls/12')) return structuredClone(current);
+    if (endpoint === '/graphql' && body.query.startsWith('query')) return readiness(current);
     if (endpoint === '/graphql') {
       assert.ok(Object.values(checks).every(x => x.status === 'in_progress' && x.conclusion === null));
       if (rejectRequest) throw new Error('SYNTHETIC_UNTRUSTED_API_BODY');
@@ -591,7 +619,7 @@ function publicationEnv(t, confirmation = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'dextech-order-publish-'));
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
   return { ...env(), GITHUB_OUTPUT: path.join(dir, 'output'), AUTO_MERGE_RESULT: 'success',
-    CONFIRMED_HEAD: confirmation.confirmed_head, CONFIRMED_BASE: confirmation.confirmed_base,
+    CONFIRMED_HEAD: confirmation.confirmed_head, CONFIRMED_BASE: confirmation.confirmed_base, CONFIRMED_MERGE: confirmation.confirmed_merge,
     CONFIRMED_RUN: confirmation.confirmed_run };
 }
 
@@ -599,10 +627,10 @@ test('request and read-back confirmation precede both successful required checks
   const mock = orderAPI();
   const confirmation = await c.requestAutoMerge(env(), mock.api);
   assert.ok(Object.values(mock.checks).every(x => x.status === 'in_progress'));
-  assert.deepEqual(confirmation, { confirmed_head: head, confirmed_base: base, confirmed_run: `123:1:${head}` });
+  assert.deepEqual(confirmation, { confirmed_head: head, confirmed_base: base, confirmed_merge: merge, confirmed_run: `123:1:${head}:${merge}:${base}` });
   await c.publish(publicationEnv(t, confirmation), mock.api);
   assert.ok(Object.values(mock.checks).every(x => x.status === 'completed' && x.conclusion === 'success'));
-  const enableIndex = mock.calls.findIndex(x => x.endpoint === '/graphql');
+  const enableIndex = mock.calls.findIndex(x => x.body?.query?.startsWith('mutation'));
   const firstSuccess = mock.calls.findIndex(x => x.body?.conclusion === 'success');
   assert.ok(enableIndex >= 0 && firstSuccess > enableIndex);
   assert.ok(mock.calls.slice(enableIndex + 1, firstSuccess).some(x => x.endpoint.endsWith('/pulls/12')));
@@ -620,7 +648,7 @@ test('failed request, missing mutation confirmation or missing read-back never p
 });
 
 test('publisher rejects absent, stale or unsuccessful confirmation even if native squash is enabled', async t => {
-  for (const override of [{ CONFIRMED_HEAD: base }, { CONFIRMED_BASE: head },
+  for (const override of [{ CONFIRMED_HEAD: base }, { CONFIRMED_BASE: head }, { CONFIRMED_MERGE: head },
     { CONFIRMED_RUN: `123:0:${head}` }, { AUTO_MERGE_RESULT: 'cancelled' }, { AUTO_MERGE_RESULT: 'skipped' }]) {
     const mock = orderAPI();
     const confirmed = await c.requestAutoMerge(env(), mock.api);
@@ -637,7 +665,7 @@ test('changed main, stale head, drafts, closed PRs and forks fail before mutatio
   for (const options of [{ changedMain: true }, ...[stale, draft, closed, fork].map(current => ({ current }))]) {
     const mock = orderAPI(options);
     await assert.rejects(c.requestAutoMerge(env(), mock.api));
-    assert.equal(mock.calls.some(x => x.method !== 'GET'), false);
+    assert.equal(mock.calls.some(x => x.body?.query?.startsWith('mutation')), false);
   }
 });
 
@@ -657,18 +685,18 @@ test('invalid review, failed disarming and ineligibility cannot request auto-mer
 test('matching squash request is confirmed idempotently; other methods and stale requests fail', async () => {
   const mock = orderAPI({ existing: 'squash' });
   assert.equal((await c.requestAutoMerge(env(), mock.api)).confirmed_head, head);
-  assert.equal(mock.calls.some(x => x.method !== 'GET'), false);
+  assert.equal(mock.calls.some(x => x.body?.query?.startsWith('mutation')), false);
   assert.equal(mock.calls.filter(x => x.endpoint.endsWith('/pulls/12')).length, 2);
   for (const method of ['merge', 'rebase', 'SQUASH', '']) {
     const current = pr(); current.auto_merge = { merge_method: method };
     const invalid = orderAPI({ current });
     await assert.rejects(c.requestAutoMerge(env(), invalid.api));
-    assert.equal(invalid.calls.some(x => x.method !== 'GET'), false);
+    assert.equal(invalid.calls.some(x => x.body?.query?.startsWith('mutation')), false);
   }
   const stale = pr(); stale.head.sha = base;
   const invalid = orderAPI({ current: stale, existing: 'squash' });
   await assert.rejects(c.requestAutoMerge(env(), invalid.api));
-  assert.equal(invalid.calls.some(x => x.method !== 'GET'), false);
+  assert.equal(invalid.calls.some(x => x.body?.query?.startsWith('mutation')), false);
 });
 
 test('wrong method or head in GitHub mutation result fails confirmation', async () => {
@@ -689,7 +717,7 @@ test('eligible drafts retain manual review behavior without requesting auto-merg
   const mock = orderAPI({ current });
   await c.publish({ ...publicationEnv(t), AUTO_MERGE_RESULT: 'skipped', PR_DRAFT: 'true' }, mock.api);
   assert.ok(Object.values(mock.checks).every(x => x.conclusion === 'success'));
-  assert.equal(mock.calls.some(x => x.endpoint === '/graphql'), false);
+  assert.equal(mock.calls.some(x => x.body?.query?.startsWith('mutation')), false);
 });
 
 test('API failure diagnostics contain only fixed categories, never untrusted bodies or exceptions', async () => {
@@ -731,10 +759,507 @@ test('workflow orders disarming, evaluation, native request, then publication wi
   assert.match(job('publish'), /needs: \[snapshot, eligibility, review, disarm, auto-merge\]/);
   assert.match(job('publish'), /contents: read\n      checks: write/);
   assert.doesNotMatch(job('publish'), /pull-requests: write|contents: write/);
-  for (const field of ['confirmed_head', 'confirmed_base', 'confirmed_run']) {
+  for (const field of ['confirmed_head', 'confirmed_base', 'confirmed_merge', 'confirmed_run']) {
     assert.ok(job('publish').includes(`needs.auto-merge.outputs.${field}`));
   }
   const source = fs.readFileSync(path.join(__dirname, '../.github/codex/control.cjs'), 'utf8');
   assert.doesNotMatch(source, /\bmergePullRequest\b|\/pulls\/[^\n]*\/merge|--admin/);
   assert.equal(p.classify(['.github/workflows/codex-review.yml', '.github/codex/control.cjs']).eligible, false);
+});
+
+test('source-head checks retain the independent synthetic merge binding', async t => {
+  const mock = orderAPI();
+  assert.notEqual(head, merge);
+  const confirmation = await c.requestAutoMerge(env(), mock.api);
+  const mutation = mock.calls.find(x => x.body?.query?.startsWith('mutation'));
+  assert.equal(mutation.body.variables.head, head);
+  assert.notEqual(mutation.body.variables.head, merge);
+  assert.equal(confirmation.confirmed_merge, merge);
+  await c.publish(publicationEnv(t, confirmation), mock.api);
+  for (const value of Object.values(mock.checks)) {
+    assert.equal(value.head_sha, head);
+    assert.equal(value.external_id, `dextech:12:123:1:${head}:${base}`);
+    assert.match(value.output.summary, new RegExp(`Reviewed head: ${head}. Merge candidate: ${merge}`));
+  }
+});
+
+test('a changed merge ref, unknown mergeability, or mismatched parents stops auto-merge before mutation', async () => {
+  const cases = [
+    (url, value) => url.includes('/git/ref/pull/') ? { ...value, object: { type: 'commit', sha: 'f'.repeat(40) } } : value,
+    (url, value) => url.includes('/git/ref/pull/') ? { ...value, ref: 'refs/heads/main' } : value,
+    (url, value) => url.includes('/git/commits/') ? { ...value, parents: [{ sha: base }, { sha: base }] } : value,
+    (url, value) => url.includes('/git/commits/') ? { ...value, parents: [{ sha: head }, { sha: base }] } : value,
+    (url, value) => url.includes('/git/commits/') ? { ...value, parents: [] } : value,
+    (url, value) => url.endsWith('/pulls/12') ? { ...value, merge_commit_sha: null } : value,
+    (url, value) => url.endsWith('/pulls/12') ? { ...value, merge_commit_sha: 'f'.repeat(40) } : value,
+    (url, value) => url.endsWith('/pulls/12') ? { ...value, mergeable: null } : value,
+    (url, value) => url.endsWith('/pulls/12') ? { ...value, mergeable: false } : value
+  ];
+  for (const transform of cases) {
+    const mock = orderAPI();
+    await assert.rejects(c.requestAutoMerge(env(), async (url, ...args) => transform(url, await mock.api(url, ...args))),
+      error => c.diagnostic(error).includes('stale-or-unavailable-merge-candidate'));
+    assert.equal(mock.calls.some(x => x.body?.query?.startsWith('mutation')), false);
+  }
+});
+
+test('missing merge SHA and stale ownership cannot authorize a request', async () => {
+  for (const value of [undefined, '', 'invalid', merge.toUpperCase()]) {
+    const mock = orderAPI();
+    await assert.rejects(c.requestAutoMerge({ ...env(), MERGE_SHA: value }, mock.api));
+    assert.equal(mock.calls.length, 0);
+  }
+  for (const transform of [x => ({ ...x, head_sha: merge }),
+    x => ({ ...x, external_id: `123:1:${head}` }),
+    x => ({ ...x, external_id: `123:1:${head}:${head}:${base}` })]) {
+    const mock = mockAPI(pr(), transform);
+    await assert.rejects(c.requestAutoMerge(env(), mock.api));
+    assert.equal(mock.calls.some(x => x.body?.query?.startsWith('mutation')), false);
+  }
+});
+
+test('merge-candidate change during request confirmation leaves both checks pending', async () => {
+  const mock = orderAPI();
+  let requested = false;
+  await assert.rejects(c.requestAutoMerge(env(), async (url, ...args) => {
+    const result = await mock.api(url, ...args);
+    if (url === '/graphql' && args[1]?.query?.startsWith('mutation')) requested = true;
+    if (requested && url.includes('/git/ref/pull/')) result.object.sha = 'f'.repeat(40);
+    return result;
+  }));
+  assert.ok(Object.values(mock.checks).every(x => x.status === 'in_progress'));
+  assert.equal(mock.calls.some(x => x.method === 'PATCH'), false);
+});
+
+test('publication revalidates both SHAs before each check update', async t => {
+  for (const when of ['before-publication', 'between-writes']) {
+    const mock = orderAPI();
+    const confirmation = await c.requestAutoMerge(env(), mock.api);
+    let writes = 0;
+    await assert.rejects(c.publish(publicationEnv(t, confirmation), async (url, method, body) => {
+      const result = await mock.api(url, method, body);
+      if (method === 'PATCH') writes++;
+      if (url.includes('/git/ref/pull/') && (when === 'before-publication' || writes === 1)) {
+        result.object.sha = 'f'.repeat(40);
+      }
+      return result;
+    }));
+    assert.equal(writes, when === 'before-publication' ? 0 : 1);
+    assert.equal(mock.checks.eligible.status, 'in_progress');
+  }
+  const mock = orderAPI();
+  const confirmation = await c.requestAutoMerge(env(), mock.api);
+  await assert.rejects(c.publish(publicationEnv(t, confirmation), async (url, ...args) => {
+    const result = await mock.api(url, ...args);
+    if (url.endsWith('/pulls/12')) result.head.sha = 'f'.repeat(40);
+    return result;
+  }));
+  assert.equal(mock.calls.some(x => x.method === 'PATCH'), false);
+});
+
+test('snapshot uses the live synthetic merge SHA and never falls back to the event head', async t => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'dextech-merge-snapshot-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  fs.writeFileSync(path.join(dir, 'event.json'), JSON.stringify({ pull_request: { ...pr(), merge_commit_sha: head } }));
+  const values = { ...env(), GITHUB_EVENT_PATH: path.join(dir, 'event.json'),
+    GITHUB_OUTPUT: path.join(dir, 'output'), GITHUB_SHA: base,
+    GITHUB_REPOSITORY: 'dexsword/dextech', GITHUB_EVENT_NAME: 'pull_request_target' };
+  const writes = [];
+  await c.snapshot(values, async (url, method, body) => {
+    if (method === 'POST') { writes.push(body); return { ...body, id: 100 + writes.length, conclusion: null }; }
+    return mergeResponse(url) || pr();
+  });
+  assert.ok(writes.every(x => x.head_sha === head && x.head_sha !== merge));
+  assert.match(fs.readFileSync(values.GITHUB_OUTPUT, 'utf8'), new RegExp(`merge=${merge}`));
+  for (const invalid of [{ merge_commit_sha: null }, { mergeable: null }, { mergeable: false }]) {
+    await assert.rejects(c.snapshot(values, async (url, method, body) => {
+      if (method === 'POST') return { ...body, id: 200, conclusion: null };
+      return mergeResponse(url) || { ...pr(), ...invalid };
+    }, async () => {}));
+  }
+});
+
+test('workflow carries the merge SHA and confirmation without changing exact-head checkout or permissions', () => {
+  const workflow = fs.readFileSync(path.join(__dirname, '../.github/workflows/codex-review.yml'), 'utf8');
+  assert.match(workflow, /merge: \$\{\{ steps.snapshot.outputs.merge \}\}/);
+  const heads = [...workflow.matchAll(/HEAD_SHA: \$\{\{ needs.snapshot.outputs.head \}\}/g)];
+  const merges = [...workflow.matchAll(/MERGE_SHA: \$\{\{ needs.snapshot.outputs.merge \}\}/g)];
+  assert.equal(merges.length, heads.length);
+  assert.equal(merges.length, 6);
+  assert.match(workflow, /CONFIRMED_MERGE: \$\{\{ needs.auto-merge.outputs.confirmed_merge \}\}/);
+  assert.match(workflow, /confirmed_merge: \$\{\{ steps.request.outputs.confirmed_merge \}\}/);
+  assert.doesNotMatch(workflow, /ref: \$\{\{ needs.snapshot.outputs.merge \}\}/);
+  assert.equal(p.classify(['.github/codex/control.cjs', '.github/workflows/codex-review.yml']).eligible, false);
+});
+
+test('snapshot installs pending checks immediately and retries transient merge discovery', async t => {
+  for (const condition of ['unknown', 'missing-sha', 'ref-404', 'commit-404', 'final-read-unknown', 'exhausted',
+    'stale-head', 'stale-base', 'conflict', 'permission', 'wrong-parents', 'malformed']) {
+    await t.test(condition, async t => {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'dextech-discovery-'));
+      t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+      fs.writeFileSync(path.join(dir, 'event'), JSON.stringify({ pull_request: pr() }));
+      const values = { ...env(), GITHUB_EVENT_PATH: path.join(dir, 'event'), GITHUB_OUTPUT: path.join(dir, 'output'),
+        GITHUB_SHA: base, GITHUB_REPOSITORY: p.REPOSITORY, GITHUB_EVENT_NAME: 'pull_request_target' };
+      const delays = [], writes = [];
+      let reads = 0;
+      const api = c.client({ GH_TOKEN: 'non-secret-test-placeholder' }, async (url, options) => {
+        const endpoint = new URL(url).pathname + new URL(url).search;
+        let result = mergeResponse(endpoint) || pr();
+        let status = 200;
+        if (options.method === 'POST') {
+          writes.push(JSON.parse(options.body));
+          assert.equal(delays.length, 0);
+          result = { ...JSON.parse(options.body), id: 100 + writes.length, conclusion: null };
+        } else if (endpoint.endsWith('/pulls/12')) {
+          reads++;
+          if (delays.length === 0 || condition === 'exhausted') {
+            if (['unknown', 'exhausted', 'stale-head', 'stale-base'].includes(condition)) result.mergeable = null;
+            if (condition === 'missing-sha') result.merge_commit_sha = null;
+            if (condition === 'final-read-unknown' && reads === 5) result.mergeable = null;
+            if (condition === 'conflict') result.mergeable = false;
+            if (condition === 'malformed') result.merge_commit_sha = 'untrusted-invalid';
+            if (condition === 'permission') status = 403;
+          } else if (condition === 'stale-head') result.head.sha = 'c'.repeat(40);
+        }
+        if (delays.length && condition === 'stale-base' && endpoint.endsWith('/heads/main')) result.object.sha = 'c'.repeat(40);
+        if (!delays.length && ((condition === 'ref-404' && endpoint.endsWith('/pull/12/merge')) ||
+            (condition === 'commit-404' && endpoint.includes('/git/commits/')))) status = 404;
+        if (condition === 'wrong-parents' && endpoint.includes('/git/commits/')) result.parents.reverse();
+        return { status, ok: status === 200, json: async () => {
+          assert.equal(status, 200, 'rejected HTTP bodies must not be parsed');
+          return result;
+        } };
+      });
+      const run = () => c.snapshot(values, api, async ms => { assert.equal(writes.length, 2); delays.push(ms); });
+      if (['unknown', 'missing-sha', 'ref-404', 'commit-404', 'final-read-unknown'].includes(condition)) {
+        await run();
+        assert.deepEqual(delays, [1000]);
+        assert.equal(writes.length, 2);
+        assert.ok(writes.every(check => check.head_sha === head && check.status === 'in_progress'));
+        assert.match(fs.readFileSync(values.GITHUB_OUTPUT, 'utf8'), new RegExp(`head=${head}\\nbase=${base}\\nmerge=${merge}`));
+      } else {
+        await assert.rejects(run(), error => {
+          const category = condition === 'exhausted' ? 'merge-candidate-discovery-timeout' :
+            condition.startsWith('stale-') ? 'stale-head-or-base' :
+              condition === 'permission' ? 'permission-or-repository-setting-rejection' : 'stale-or-unavailable-merge-candidate';
+          assert.equal(c.diagnostic(error), `Review control failed closed: ${category}.`);
+          return true;
+        });
+        assert.equal(writes.length, condition === 'permission' ? 0 : 2);
+        assert.equal(fs.existsSync(values.GITHUB_OUTPUT), false);
+        assert.deepEqual(delays, condition === 'exhausted' ? [1000, 2000, 4000, 8000, 15000, 30000] :
+          condition.startsWith('stale-') ? [1000] : []);
+      }
+    });
+  }
+});
+
+test('live readiness requires native CI on HEAD, valid review metadata, and mergeability', async () => {
+  const variants = [
+    ['ci-failure', p => p.commits.nodes[0].commit.statusCheckRollup.contexts.nodes[0].conclusion = 'FAILURE'],
+    ['ci-contradictory', p => p.commits.nodes[0].commit.statusCheckRollup.contexts.nodes[0].status = 'IN_PROGRESS'],
+    ['missing-ci', p => p.commits.nodes[0].commit.statusCheckRollup.contexts.nodes.shift()],
+    ['split-sha', p => p.potentialMergeCommit.statusCheckRollup = { contexts: { nodes: [{ __typename: 'CheckRun' }] } }],
+    ['malformed-approval', p => p.reviewDecision = 'UNRECOGNIZED'],
+    ['malformed-thread', p => p.reviewThreads.nodes.push({ isResolved: 'false' })],
+    ['draft', p => p.isDraft = true],
+    ['closed', p => p.state = 'CLOSED'],
+    ['conflict', p => p.mergeable = 'CONFLICTING'],
+    ['unknown', p => p.mergeable = 'UNKNOWN'],
+    ['stale-head', p => p.headRefOid = base],
+    ['stale-base', p => p.baseRefOid = head],
+    ['wrong-ci-source', p => p.commits.nodes[0].commit.statusCheckRollup.contexts.nodes[0].checkSuite.app.databaseId = 1]
+  ];
+  for (const [name, alter] of variants) {
+    const response = readiness(); alter(response.data.repository.pullRequest);
+    const mock = orderAPI();
+    await assert.rejects(c.requestAutoMerge(env(), async (url, method, body) =>
+      body?.query?.startsWith('query') ? response : mock.api(url, method, body)), name);
+    assert.equal(mock.calls.some(c => c.body?.query?.startsWith('mutation')), false, name);
+  }
+});
+
+test('cancelled, superseded and replaced-attempt runs cannot enable or publish authorization', async t => {
+  for (const scenario of ['cancelled', 'superseded', 'attempt', 'ownership']) {
+    const mock = orderAPI();
+    const api = async (url, method, body) => {
+      const result = await mock.api(url, method, body);
+      if (url.endsWith('/actions/runs/123') && scenario === 'cancelled') result.status = 'completed';
+      if (url.endsWith('/actions/runs/123') && scenario === 'attempt') result.run_attempt = 2;
+      if (url.includes('/actions/workflows/') && scenario === 'superseded') result.workflow_runs.push({ id: 124, display_title: 'Codex review PR #12' });
+      if (url.endsWith('/check-runs/101') && scenario === 'ownership') result.external_id = 'newer-run';
+      return result;
+    };
+    await assert.rejects(c.requestAutoMerge(env(), api));
+    await assert.rejects(c.publish(publicationEnv(t), api));
+    assert.equal(mock.calls.some(c => c.body?.query?.startsWith('mutation') || c.body?.conclusion === 'success'), false);
+  }
+});
+
+test('reruns reclaim existing pending head checks and close/reopen disarms without reviewing a closed PR', async t => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'dextech-rerun-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const values = { ...env(), GITHUB_EVENT_PATH: path.join(dir, 'event'), GITHUB_OUTPUT: path.join(dir, 'output'),
+    GITHUB_SHA: base, GITHUB_REPOSITORY: p.REPOSITORY, GITHUB_EVENT_NAME: 'pull_request_target' };
+  const checks = [], mutations = [];
+  let current = { ...pr(), auto_merge: { merge_method: 'squash' } };
+  const api = async (url, method = 'GET', body) => {
+    if (body?.query?.startsWith('mutation')) {
+      mutations.push(body.query); current.auto_merge = null;
+      return { data: { disablePullRequestAutoMerge: { pullRequest: { id: current.node_id } } } };
+    }
+    if (url.includes('/check-runs?')) return { total_count: checks.length, check_runs: structuredClone(checks) };
+    if (method === 'POST') {
+      assert.equal(current.auto_merge, null);
+      const check = { ...body, id: 101 + checks.length, app: { slug: 'github-actions' }, conclusion: null };
+      checks.push(check); return check;
+    }
+    if (method === 'PATCH') {
+      const check = checks.find(c => url.endsWith(`/${c.id}`));
+      Object.assign(check, body, { conclusion: null }); return check;
+    }
+    return mergeResponse(url) || structuredClone(current);
+  };
+  for (const state of ['open', 'open', 'closed', 'open']) {
+    current.state = state;
+    fs.writeFileSync(values.GITHUB_EVENT_PATH, JSON.stringify({ pull_request: current }));
+    await c.snapshot(values, api, async () => assert.fail('unexpected retry'));
+    assert.equal(checks.length, 2);
+    assert.ok(checks.every(c => c.head_sha === head && c.status === 'in_progress'));
+  }
+  assert.equal(mutations.length, 1);
+  assert.match(mutations[0], /disablePullRequestAutoMerge/);
+  assert.match(fs.readFileSync(values.GITHUB_OUTPUT, 'utf8'), /active=false/);
+});
+
+test('workflow avoids recursive and irrelevant events and admits only base-controlled PR events', () => {
+  const workflow = fs.readFileSync(path.join(__dirname, '../.github/workflows/codex-review.yml'), 'utf8');
+  assert.doesNotMatch(workflow, /\bcheck_run:|\bcheck_suite:|\bstatus:/);
+  assert.match(workflow, /converted_to_draft, closed, edited/);
+  assert.match(workflow, /cancel-in-progress: true/);
+  assert.match(workflow, /converted_to_draft, closed/);
+  assert.doesNotMatch(workflow, /workflow_dispatch:/);
+  assert.match(workflow, /ref: \$\{\{ needs.snapshot.outputs.base \}\}/);
+  assert.doesNotMatch(workflow, /ref: \$\{\{ inputs\./);
+});
+
+test('completed checks are superseded and a non-pending GitHub response stops snapshot', async t => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'dextech-completed-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const values = { ...env(), GITHUB_EVENT_PATH: path.join(dir, 'event'), GITHUB_OUTPUT: path.join(dir, 'output'),
+    GITHUB_SHA: base, GITHUB_REPOSITORY: p.REPOSITORY, GITHUB_EVENT_NAME: 'pull_request_target' };
+  fs.writeFileSync(values.GITHUB_EVENT_PATH, JSON.stringify({ pull_request: pr() }));
+  for (const returnedState of ['in_progress', 'completed']) {
+    const writes = [], archived = [];
+    const created = {};
+    const api = async (url, method, body) => {
+      if (url.includes('/check-runs?')) return { total_count: 2, check_runs: ['gate', 'eligible'].map((kind, i) =>
+        ({ ...check(kind), id: 11 + i, status: 'completed', conclusion: 'failure' })) };
+      if (method === 'POST') {
+        writes.push(body);
+        const id = 101 + writes.length;
+        return created[id] = { ...body, id, status: returnedState,
+          conclusion: returnedState === 'in_progress' ? null : 'failure' };
+      }
+      if (method === 'PATCH') {
+        assert.deepEqual(Object.keys(body), ['name'], 'preserve historical conclusions');
+        assert.ok(writes.length > archived.length, 'replacement is pending before old name changes');
+        const id = Number(url.split('/').pop());
+        archived.push(body);
+        return { ...body, id, head_sha: head, conclusion: 'failure' };
+      }
+      if (created[url.split('/').pop()]) return created[url.split('/').pop()];
+      return mergeResponse(url) || pr();
+    };
+    if (returnedState === 'in_progress') {
+      await c.snapshot(values, api);
+      assert.equal(writes.length, 2);
+      assert.equal(archived.length, 2);
+      assert.ok(archived.every(c => /superseded/.test(c.name)));
+    } else await assert.rejects(c.snapshot(values, api), error => c.diagnostic(error).includes('required-checks-not-pending'));
+  }
+});
+
+test('feedback is a safe no-op when auto-merge closes the PR before or during comment lookup', async () => {
+  const managed = { id: 999, user: { login: 'github-actions[bot]', type: 'Bot' },
+    body: '<!-- dextech-codex-review-feedback:v1 -->\nold finding' };
+  for (const closeAt of [1, 2]) {
+    let reads = 0;
+    await c.publishFeedback(env(), async (url, method = 'GET') => {
+      assert.equal(method, 'GET');
+      if (url.endsWith('/pulls/12')) return { ...pr(), state: ++reads >= closeAt ? 'closed' : 'open' };
+      if (url.includes('/comments?')) return [managed];
+      assert.fail('Unexpected request');
+    });
+    assert.equal(reads, closeAt);
+  }
+});
+
+
+test('run-ownership API consumers declare Actions read; reviewer cannot write or override base control', () => {
+  const workflow = fs.readFileSync(path.join(__dirname, '../.github/workflows/codex-review.yml'), 'utf8');
+  for (const name of ['snapshot', 'publish', 'auto-merge']) {
+    const job = workflow.split(`\n  ${name}:`)[1].split(/\n  [a-z][a-z-]*:/)[0];
+    assert.match(job, /permissions:\n      actions: read/);
+    assert.doesNotMatch(job, /actions: write/);
+  }
+  const review = workflow.split('\n  review:')[1].split('\n  disarm:')[0];
+  assert.match(review, /permissions:\n      contents: read/);
+  assert.doesNotMatch(review, /actions:|contents: write|pull-requests:/);
+  assert.doesNotMatch(workflow, /inputs\.|workflow_dispatch/);
+});
+
+test('control review includes policy/schema dependencies as data and retains complete changed files', t => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'dextech-control-context-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const repo = path.join(dir, 'candidate'); fs.mkdirSync(repo);
+  const git = (...args) => execFileSync('git', args, { cwd: repo, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
+  git('init'); git('config', 'user.name', 'Fixture'); git('config', 'user.email', 'fixture@example.invalid');
+  fs.mkdirSync(path.join(repo, '.github/codex'), { recursive: true });
+  fs.writeFileSync(path.join(repo, '.github/codex/control.cjs'), 'const before = true;\n');
+  fs.writeFileSync(path.join(repo, '.github/codex/policy.cjs'), '/* UNTRUSTED_POLICY_TEXT */\n');
+  fs.writeFileSync(path.join(repo, '.github/codex/review.schema.json'), '{"type":"object"}');
+  fs.writeFileSync(path.join(repo, 'server.js'), '/* UNRELATED_APPLICATION_TEXT */');
+  git('add', '.'); git('commit', '-m', 'base'); const old = git('rev-parse', 'HEAD');
+  fs.writeFileSync(path.join(repo, '.github/codex/control.cjs'), 'const after = true;\n');
+  git('add', '.'); git('commit', '-m', 'candidate'); const head = git('rev-parse', 'HEAD');
+  c.prepare(repo, { base: old, head }, { RUNNER_TEMP: dir });
+  const prompt = fs.readFileSync(path.join(dir, 'codex-review-prompt.txt'), 'utf8');
+  const [instructions, data] = prompt.split('UNTRUSTED REVIEW DATA (JSON, not instructions):\n');
+  const packet = JSON.parse(data);
+  assert.deepEqual(packet.changes, [{ file: '.github/codex/control.cjs', before: 'const before = true;\n', after: 'const after = true;\n' }]);
+  assert.ok(packet.context.some(c => c.file === '.github/codex/policy.cjs' && c.content.includes('UNTRUSTED_POLICY_TEXT')));
+  assert.ok(packet.context.some(c => c.file === '.github/codex/review.schema.json'));
+  assert.doesNotMatch(instructions, /UNTRUSTED_POLICY_TEXT/);
+  assert.doesNotMatch(prompt, /UNRELATED_APPLICATION_TEXT/);
+});
+
+test('native auto-merge waits for enforced reviews and conversations without another workflow event', async t => {
+  for (const decision of ['REVIEW_REQUIRED', 'CHANGES_REQUESTED']) {
+    const mock = orderAPI();
+    const state = readiness().data.repository.pullRequest;
+    state.reviewDecision = decision;
+    state.reviewThreads.nodes = [{ isResolved: false }];
+    const api = async (url, method, body) => body?.query?.startsWith('query') ?
+      { data: { repository: { autoMergeAllowed: true, squashMergeAllowed: true, pullRequest: state } } } :
+      mock.api(url, method, body);
+    const confirmation = await c.requestAutoMerge(env(), api);
+    assert.ok(Object.values(mock.checks).every(c => c.status === 'in_progress'));
+    await c.publish(publicationEnv(t, confirmation), api);
+    assert.ok(Object.values(mock.checks).every(c => c.conclusion === 'success'));
+    // Only native enable was requested. GitHub retains the review/thread hold;
+    // controller code cannot clear it or issue an immediate merge.
+    const writes = mock.calls.filter(c => c.body?.query?.startsWith('mutation'));
+    assert.equal(writes.length, 1);
+    assert.match(writes[0].body.query, /enablePullRequestAutoMerge/);
+    assert.doesNotMatch(JSON.stringify(mock.calls), /mergePullRequest\(|resolveReviewThread|dismissPullRequestReview|addPullRequestReview/);
+    assert.equal(state.reviewDecision, decision);
+    assert.equal(state.reviewThreads.nodes[0].isResolved, false);
+  }
+});
+
+
+test('pending native CI uses GitHub auto-merge without a local completion deadline', async t => {
+  for (const status of ['QUEUED', 'IN_PROGRESS', 'WAITING', 'PENDING', 'REQUESTED']) {
+    const mock = orderAPI();
+    const response = readiness();
+    const native = response.data.repository.pullRequest.commits.nodes[0].commit.statusCheckRollup.contexts.nodes[0];
+    Object.assign(native, { status, conclusion: null, startedAt: '2000-01-01T00:00:00Z' });
+    const api = async (url, method, body) => body?.query?.startsWith('query') ? response : mock.api(url, method, body);
+    const confirmation = await c.requestAutoMerge(env(), api);
+    assert.ok(Object.values(mock.checks).every(check => check.status === 'in_progress'));
+    await c.publish(publicationEnv(t, confirmation), api);
+    assert.ok(Object.values(mock.checks).every(check => check.conclusion === 'success'));
+    assert.equal(native.status, status); // Only GitHub can complete native CI.
+    assert.equal(native.conclusion, null);
+    assert.equal(mock.calls.filter(call => call.body?.query?.includes('enablePullRequestAutoMerge')).length, 1);
+    assert.ok(mock.calls.filter(call => call.method === 'PATCH').every(call => /check-runs\/10[12]$/.test(call.endpoint)));
+  }
+  const workflow = fs.readFileSync(path.join(__dirname, '../.github/workflows/codex-review.yml'), 'utf8');
+  const control = fs.readFileSync(path.join(__dirname, '../.github/codex/control.cjs'), 'utf8');
+  assert.doesNotMatch(workflow, /control\.cjs wait/);
+  assert.doesNotMatch(control, /waitForRequirements/);
+});
+
+test('terminal or malformed CI cannot enable auto-merge, including a failure before publication', async t => {
+  const states = ['FAILURE', 'CANCELLED', 'TIMED_OUT', 'ACTION_REQUIRED', 'STARTUP_FAILURE', 'STALE', 'SKIPPED', 'NEUTRAL', null];
+  for (const conclusion of states) {
+    const mock = orderAPI();
+    const response = readiness();
+    response.data.repository.pullRequest.commits.nodes[0].commit.statusCheckRollup.contexts.nodes[0].conclusion = conclusion;
+    const api = async (url, method, body) => body?.query?.startsWith('query') ? response : mock.api(url, method, body);
+    await assert.rejects(c.requestAutoMerge(env(), api));
+    assert.equal(mock.calls.some(call => call.body?.query?.startsWith('mutation')), false);
+  }
+  const mock = orderAPI();
+  const response = readiness();
+  const native = response.data.repository.pullRequest.commits.nodes[0].commit.statusCheckRollup.contexts.nodes[0];
+  Object.assign(native, { status: 'IN_PROGRESS', conclusion: null });
+  const api = async (url, method, body) => body?.query?.startsWith('query') ? response : mock.api(url, method, body);
+  const confirmation = await c.requestAutoMerge(env(), api);
+  Object.assign(native, { status: 'COMPLETED', conclusion: 'FAILURE' });
+  await assert.rejects(c.publish(publicationEnv(t, confirmation), api));
+  assert.ok(Object.values(mock.checks).every(check => check.status === 'in_progress'));
+});
+
+test('base retargets run both workflows; irrelevant edits cannot cancel or supersede them', async () => {
+  const vm = require('node:vm');
+  const codex = fs.readFileSync(path.join(__dirname, '../.github/workflows/codex-review.yml'), 'utf8');
+  const ci = fs.readFileSync(path.join(__dirname, '../.github/workflows/ci.yml'), 'utf8');
+  const evaluate = (expression, event) => vm.runInNewContext(expression, {
+    github: { event, run_id: 124, workflow: 'CI', ref: 'refs/pull/12/merge', repository: p.REPOSITORY },
+    format: (template, value) => template.replace('{0}', value)
+  });
+  const expand = (text, event) => text.replace(/\$\{\{ (.*?) \}\}/g, (_, expression) => evaluate(expression, event));
+  const guard = codex.match(/  snapshot:\n    if: >-\n([\s\S]*?)    runs-on:/)[1].trim();
+  const ciGuard = ci.match(/    if: (.*)/)[1];
+  const ciName = ci.match(/    name: (.*)/)[1];
+  const group = workflow => workflow.match(/  group: (.*)/)[1];
+  const title = codex.match(/run-name: "(.*)"/)[1];
+  assert.match(ci, /types: \[opened, synchronize, reopened, edited\]/);
+  for (const changes of [{ base: { ref: { from: 'develop' } } }, {}, { title: { from: 'old' } }, { body: { from: 'old' } }]) {
+    // Actions expressions resolve absent nested fields to null. Represent that
+    // explicitly here; all evaluated expressions come from the trusted workflows.
+    const event = { action: 'edited', pull_request: pr(), changes: { ...changes, base: changes.base || { ref: { from: null } } } };
+    const relevant = !!changes.base;
+    assert.equal(!!evaluate(guard, event), relevant);
+    assert.equal(!!evaluate(ciGuard, event), relevant);
+    assert.equal(expand(ciName, event), relevant ? 'checks' : 'Ignored PR edit');
+    assert.equal(expand(group(codex), event), relevant ? 'codex-review-pr-12' : 'codex-review-pr-ignored-124');
+    assert.equal(expand(group(ci), event), relevant ? 'CI-12' : 'CI-ignored-124');
+    const display_title = expand(title, event);
+    assert.equal(display_title, relevant ? 'Codex review PR #12' : 'Ignored PR edit #12');
+    const mock = orderAPI();
+    const api = async (url, method, body) => {
+      const result = await mock.api(url, method, body);
+      if (url.includes('/actions/workflows/')) result.workflow_runs.push({ id: 124, display_title });
+      return result;
+    };
+    if (relevant) await assert.rejects(c.requestAutoMerge(env(), api));
+    else await c.requestAutoMerge(env(), api);
+  }
+});
+
+test('snapshot ignores title/body edits before API access but retargets create pending checks', async t => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'dextech-retarget-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const values = { ...env(), GITHUB_EVENT_PATH: path.join(dir, 'event'), GITHUB_OUTPUT: path.join(dir, 'output'),
+    GITHUB_SHA: base, GITHUB_REPOSITORY: p.REPOSITORY, GITHUB_EVENT_NAME: 'pull_request_target' };
+  for (const changes of [undefined, {}, { title: { from: 'old' } }, { body: { from: 'old' } }]) {
+    fs.writeFileSync(values.GITHUB_EVENT_PATH, JSON.stringify({ action: 'edited', changes, pull_request: pr() }));
+    await c.snapshot(values, async () => assert.fail('irrelevant edit accessed API'));
+  }
+  fs.writeFileSync(values.GITHUB_EVENT_PATH, JSON.stringify({ action: 'edited',
+    changes: { base: { ref: { from: 'develop' } } }, pull_request: pr() }));
+  const writes = [];
+  await c.snapshot(values, async (url, method, body) => {
+    if (method === 'POST') {
+      writes.push(body);
+      return { ...body, id: 100 + writes.length, conclusion: null };
+    }
+    return mergeResponse(url) || pr();
+  }, async () => assert.fail('unexpected metadata retry'));
+  assert.equal(writes.length, 2);
+  assert.ok(writes.every(check => check.head_sha === head && check.status === 'in_progress'));
 });
