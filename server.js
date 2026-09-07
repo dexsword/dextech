@@ -28,6 +28,11 @@ if (!ADMIN_TOKEN) {
 }
 
 const PORT = process.env.PORT || 3000;
+const HOST = process.env.HOST || '127.0.0.1';
+const RAW_RELEASE_SHA = process.env.APP_RELEASE_SHA || '';
+const APP_RELEASE_SHA = RAW_RELEASE_SHA.length === 40 && /^[a-f0-9]+$/i.test(RAW_RELEASE_SHA)
+  ? RAW_RELEASE_SHA.toLowerCase()
+  : 'unknown';
 const BOOKING_HORIZON_DAYS = 35;
 const HOURS = [9, 10, 11, 12, 13, 14, 15, 16, 17];
 const VALID_SERVICES = new Set([
@@ -348,6 +353,7 @@ app.get('/health', (_req, res) => {
   const bookingCount = db.prepare("SELECT COUNT(*) as n FROM bookings WHERE status = 'confirmed'").get();
   res.json({
     status: 'ok',
+    release_sha: APP_RELEASE_SHA,
     timestamp: new Date().toISOString(),
     confirmed_bookings: bookingCount.n,
     email_enabled: EMAIL_ENABLED,
@@ -703,7 +709,7 @@ async function deleteCalendarEvent(gcalEventId) {
 }
 
 // ─── Start ────────────────────────────────────────────────────────────────────
-const server = app.listen(PORT, () => {
+const server = app.listen(PORT, HOST, () => {
   console.log(`[info] Dex Tech server running on port ${PORT}`);
   console.log(`[info] Email confirmations: ${EMAIL_ENABLED ? 'enabled' : 'disabled'}`);
   console.log(`[info] Google Calendar: ${GCAL_ENABLED ? 'enabled' : 'disabled'}`);

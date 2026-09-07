@@ -67,8 +67,8 @@ async function testTipButtonFunctionality() {
         });
     }
 
-    // Part 1: Test individual button toggle
-    console.log("\nPart 1: Testing individual button toggle (show/hide)...");
+    // Part 1: "Show QR Code" is idempotent; clicking again keeps it visible.
+    console.log("\nPart 1: Testing individual button display...");
     for (var i = 0; i < tipButtonConfigs.length; i++) {
         var config = tipButtonConfigs[i];
         var button = getButtonByTextAndImageId(config.buttonTextContent, config.imageId);
@@ -93,11 +93,11 @@ async function testTipButtonFunctionality() {
 
         assertHasClass(targetContainer, 'show', "Image container #" + config.imageId + " should have 'show' class after first click.");
 
-        // Second click: should hide
+        // Second click: should remain visible
         button.click();
         await new Promise(function(resolve) { setTimeout(resolve, 100); });
 
-        assertNotHasClass(targetContainer, 'show', "Image container #" + config.imageId + " should NOT have 'show' class after second click.");
+        assertHasClass(targetContainer, 'show', "Image container #" + config.imageId + " should remain visible after second click.");
     }
 
     // Part 2: Test switching between buttons
