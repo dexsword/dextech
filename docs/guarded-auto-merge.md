@@ -444,7 +444,7 @@ Removing this task's disposable local test dependencies restores disk headroom;
 no backup, production artifact, or admission gate is removed or weakened. The
 next automatically merged commit must still pass the full deployment workflow.
 
-The read-only regression is executable with Node 22 and authenticated local `gh`:
+The read-only regression is executable with Node 22 (public GitHub reads, no credentials):
 
 ```sh
 node scripts/verify-merge-app-live.cjs
@@ -455,5 +455,8 @@ App merge actor and squash parent count, all three exact-HEAD required checks,
 successful token cleanup before merging, cancelled stale runs, and the deployment
 workflow's actual push event and merge SHA. It passed against live GitHub on
 2026-09-07. It deliberately does not claim the disk-rejected deployment succeeded.
-It is an operator integration check, separate from offline CI tests, so API
-availability and future GitHub evidence retention do not make application CI flaky.
+The installation PR #23 also runs it as a native CI step, providing automated
+GitHub-hosted verification before installation. That one-time step is scoped to
+same-repository PR #23; future application CI does not depend on retention of these
+historical runs. The standalone command remains available for operator diagnosis.
+The check receives no tokens or secrets and prints only a fixed pass/fail message.
