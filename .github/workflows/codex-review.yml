@@ -65,6 +65,8 @@ jobs:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           ref: ${{ needs.snapshot.outputs.head }}
+          fetch-depth: 0
+          fetch-tags: false
           persist-credentials: false
           path: candidate
       - id: classify
@@ -91,6 +93,8 @@ jobs:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           ref: ${{ needs.snapshot.outputs.head }}
+          fetch-depth: 0
+          fetch-tags: false
           persist-credentials: false
           path: candidate
       - name: Prepare bounded text-only review from immutable Git objects
