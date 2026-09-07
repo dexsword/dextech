@@ -97,12 +97,15 @@ authorization. It never copies CI results or creates a custom `checks` context.
    reviewed SHA; all model filenames/explanations/summaries are withheld.
    Feedback skips closed PRs, including merges between publication and feedback.
 
-Per-PR concurrency has `cancel-in-progress: true`. Opened, synchronize, reopened,
-ready-for-review, converted-to-draft, and closed events trigger review. Both CI and
-review omit `edited`: title/body edits produce no extra runs. After retargeting
-an existing PR onto main, push to its branch or close/reopen it to start the new
-base evaluation. There are no status, check-run, or check-suite triggers, so
-managed comment or check updates cannot recursively trigger another review. A rerun reclaims pending checks for the same candidate and changes their
+Per-PR concurrency has `cancel-in-progress: true`. Only opened, synchronize,
+reopened, ready-for-review, converted-to-draft, closed, and base-retarget edits
+start reviews. Both native CI and Codex admit `edited` only when
+`changes.base.ref.from` is present, so retargeting onto main starts both checks.
+Title/body-only edits skip all jobs and have unique ignored concurrency groups;
+their distinct review run names cannot supersede a current review. Ignored CI
+edits use a different job name so they cannot add a skipped required `checks`
+context. There are no status, check-run, or check-suite triggers. Updating the
+managed comment or checks cannot trigger another review. A rerun reclaims pending checks for the same candidate and changes their
 run/attempt ownership. Completed checks are superseded by fresh pending checks: live GitHub retained
 the old conclusion when asked to reset a completed check, and duplicate older
 failed names can remain required. After confirming a replacement is pending and
@@ -313,9 +316,9 @@ approval requirements rely on GitHub's documented native enforcement and local
 contract tests; no settings were changed to simulate them.
 
 
-## Historical CI waiting and base-retarget follow-up
+## CI waiting and base-retarget follow-up
 
-The prior follow-up delegated pending CI to [GitHub native auto-merge](https://docs.github.com/en/pull-requests/how-tos/merge-and-close-pull-requests/automatically-merging-a-pull-request),
+The controller delegates pending CI to [GitHub native auto-merge](https://docs.github.com/en/pull-requests/how-tos/merge-and-close-pull-requests/automatically-merging-a-pull-request),
 removing the ten-minute CI polling cutoff. This is independent of the v1.11
 wrapper rollback: the reviewer still has its existing 20-minute job limit, and
 merge-candidate discovery retains its bounded metadata retries. A missing native
@@ -331,11 +334,12 @@ publication, base-retarget triggering, ignored edit isolation, and preservation
 of the native required check name. The earlier live integration evidence above
 predates this follow-up; it does not claim a live retarget or slow-CI experiment.
 
-The prior follow-up proposed validating a harmless eligible PR
+Validate a harmless eligible PR
 with CI still pending when review completes: native squash auto-merge should be
 enabled, custom checks should pass on HEAD, and GitHub should retain the CI hold.
-Its filtered-edit handling is superseded by the App change below, which removes
-`edited` entirely. Retargeted PRs now need a push or close/reopen event.
+Also retarget a harmless PR onto main and confirm both workflows start; a later
+title/body edit must start no jobs, cancel no active run, and create no second
+required `checks` context.
 
 
 ## App-authenticated native auto-merge and production deployment
@@ -392,7 +396,7 @@ harmless eligible PR afterward. Capture the review HEAD/merge binding, native
 merge actor, resulting squash commit, push-triggered deployment run, and public
 release SHA. Confirm delayed CI does not require another review and that token
 cleanup does not cancel native auto-merge. Confirm ordinary title/body edits
-start no runs and every required check stays on the source HEAD. Earlier PR #17
+start no jobs or new review cycles and every required check stays on the source HEAD. Earlier PR #17
 and PR18–21 evidence describes the previous token implementation, not this App test.
 
 Sources: [official token action](https://github.com/actions/create-github-app-token/tree/bcd2ba49218906704ab6c1aa796996da409d3eb1),

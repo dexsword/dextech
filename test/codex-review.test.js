@@ -1039,7 +1039,7 @@ test('reruns reclaim existing pending head checks and close/reopen disarms witho
 test('workflow avoids recursive and irrelevant events and admits only base-controlled PR events', () => {
   const workflow = fs.readFileSync(path.join(__dirname, '../.github/workflows/codex-review.yml'), 'utf8');
   assert.doesNotMatch(workflow, /\bcheck_run:|\bcheck_suite:|\bstatus:/);
-  assert.doesNotMatch(workflow, /\bedited\b/);
+  assert.match(workflow, /converted_to_draft, closed, edited/);
   assert.match(workflow, /cancel-in-progress: true/);
   assert.match(workflow, /converted_to_draft, closed/);
   assert.doesNotMatch(workflow, /workflow_dispatch:/);
@@ -1206,13 +1206,41 @@ test('terminal or malformed CI cannot enable auto-merge, including a failure bef
   assert.ok(Object.values(mock.checks).every(check => check.status === 'in_progress'));
 });
 
-test('only meaningful PR events run CI and review, with per-PR cancellation', () => {
-  for (const file of ['ci.yml', 'codex-review.yml']) {
-    const workflow = fs.readFileSync(path.join(__dirname, '../.github/workflows', file), 'utf8');
-    assert.doesNotMatch(workflow, /\bedited\b|\bcheck_run:|\bcheck_suite:|\bstatus:/);
-    assert.match(workflow, /cancel-in-progress: true/);
-    assert.match(workflow, /github.event.pull_request.number/);
-    assert.match(workflow, /opened, synchronize, reopened/);
+test('base retargets run both workflows; irrelevant edits cannot cancel or supersede them', async () => {
+  const vm = require('node:vm');
+  const codex = fs.readFileSync(path.join(__dirname, '../.github/workflows/codex-review.yml'), 'utf8');
+  const ci = fs.readFileSync(path.join(__dirname, '../.github/workflows/ci.yml'), 'utf8');
+  const evaluate = (expression, event) => vm.runInNewContext(expression, {
+    github: { event, run_id: 124, workflow: 'CI', ref: 'refs/pull/12/merge', repository: p.REPOSITORY },
+    format: (template, value) => template.replace('{0}', value)
+  });
+  const expand = (text, event) => text.replace(/\$\{\{ (.*?) \}\}/g, (_, expression) => evaluate(expression, event));
+  const guard = codex.match(/  snapshot:\n    if: >-\n([\s\S]*?)    runs-on:/)[1].trim();
+  const ciGuard = ci.match(/    if: (.*)/)[1];
+  const ciName = ci.match(/    name: (.*)/)[1];
+  const group = workflow => workflow.match(/  group: (.*)/)[1];
+  const title = codex.match(/run-name: "(.*)"/)[1];
+  assert.match(ci, /types: \[opened, synchronize, reopened, edited\]/);
+  for (const changes of [{ base: { ref: { from: 'develop' } } }, {}, { title: { from: 'old' } }, { body: { from: 'old' } }]) {
+    // Actions expressions resolve absent nested fields to null. Represent that
+    // explicitly here; all evaluated expressions come from the trusted workflows.
+    const event = { action: 'edited', pull_request: pr(), changes: { ...changes, base: changes.base || { ref: { from: null } } } };
+    const relevant = !!changes.base;
+    assert.equal(!!evaluate(guard, event), relevant);
+    assert.equal(!!evaluate(ciGuard, event), relevant);
+    assert.equal(expand(ciName, event), relevant ? 'checks' : 'Ignored PR edit');
+    assert.equal(expand(group(codex), event), relevant ? 'codex-review-pr-12' : 'codex-review-pr-ignored-124');
+    assert.equal(expand(group(ci), event), relevant ? 'CI-12' : 'CI-ignored-124');
+    const display_title = expand(title, event);
+    assert.equal(display_title, relevant ? 'Codex review PR #12' : 'Ignored PR edit #12');
+    const mock = orderAPI();
+    const api = async (url, method, body) => {
+      const result = await mock.api(url, method, body);
+      if (url.includes('/actions/workflows/')) result.workflow_runs.push({ id: 124, display_title });
+      return result;
+    };
+    if (relevant) await assert.rejects(c.requestAutoMerge(env(), api));
+    else await c.requestAutoMerge(env(), api);
   }
 });
 

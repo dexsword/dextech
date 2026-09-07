@@ -1,23 +1,25 @@
 name: Codex Review
-run-name: "Codex review PR #${{ github.event.pull_request.number }}"
+# Irrelevant edits must neither cancel nor supersede an active review.
+run-name: "${{ github.event.action == 'edited' && !github.event.changes.base.ref.from && 'Ignored PR edit #' || 'Codex review PR #' }}${{ github.event.pull_request.number }}"
 
 # pull_request_target deliberately loads workflow/code/instructions from main.
 # Candidate files are read as data only; never run npm or scripts from the PR.
 on:
   pull_request_target:
     branches: [main]
-    types: [opened, synchronize, reopened, ready_for_review, converted_to_draft, closed]
+    types: [opened, synchronize, reopened, ready_for_review, converted_to_draft, closed, edited]
 
 permissions:
   contents: read
 
 concurrency:
-  group: codex-review-pr-${{ github.event.pull_request.number }}
+  group: codex-review-pr-${{ github.event.action == 'edited' && !github.event.changes.base.ref.from && format('ignored-{0}', github.run_id) || github.event.pull_request.number }}
   cancel-in-progress: true
 
 jobs:
   snapshot:
     if: >-
+      (github.event.action != 'edited' || github.event.changes.base.ref.from) &&
       github.repository == 'dexsword/dextech' &&
       github.event.pull_request.base.repo.full_name == 'dexsword/dextech' &&
       github.event.pull_request.base.ref == 'main' &&
