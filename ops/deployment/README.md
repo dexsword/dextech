@@ -124,10 +124,12 @@ Automation evidence: `/var/lib/dextech-deploy/actions`, root:root 0700; sanitize
 JSON records are 0600. Online database backups: `/var/backups/dextech/actions`,
 root:root 0700, individual files 0600. Only automation-owned manifest records,
 backups and releases qualify for pruning. Following successful new deployments,
-keep the latest five records/backups and all release SHAs referenced by those
-records plus the active release. This preserves the immediate predecessor and
-bounds automation material to five records/backups and at most ten referenced
-releases (plus the active release if different). Unrecorded/legacy releases and
+keep the latest five records/backups, all release SHAs referenced by those
+records plus the active release, and older ownership records/backups for those
+protected releases. This preserves the immediate predecessor without losing the
+record needed to prune a release later. Admission stops at 20 automation records
+until an operator reviews retention, bounding even repeated failures to 20
+records/backups and their automation releases. Unrecorded/legacy releases and
 all pre-Phase-1 backups are exempt. Failures never prune; root must review failed
 attempts if successful deployment cannot resume. No existing backups were deleted
 in Phase 1. Staging directories are temporary and removed after builds.

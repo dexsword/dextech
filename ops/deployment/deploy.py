@@ -351,6 +351,8 @@ def build(sha, work):
                 require((artifact / member.name).read_bytes() == tar.extractfile(member).read())
     validate_tree(artifact)
     (artifact / 'audit.json').unlink()
+    require({str(p.relative_to(artifact)) for p in artifact.rglob('*')
+             if not p.is_dir() and p.relative_to(artifact).parts[0] != 'node_modules'} == RUNTIME)
     sanitize_artifact(artifact)
     return artifact
 
@@ -365,6 +367,9 @@ def retain():
         protected.update([data['sha'], data['previous']])
     for path in records[5:]:
         data = json.loads(path.read_text())
+        # Keep the ownership record until its protected release can be removed.
+        if data['sha'] in protected:
+            continue
         # Delete only releases explicitly created by this automation, not legacy.
         if (data.get('created_release') and SHA_RE.fullmatch(data['sha'])
                 and data['sha'] not in protected):
@@ -436,6 +441,8 @@ def main(argv):
             print(json.dumps({'mode': mode, 'result': 'PASS', 'active': previous.name,
                               'idempotent': sha == previous.name, 'health': health}))
             return
+        # Admission limit bounds failed attempts too; no automatic failure pruning.
+        require(len(list(EVIDENCE.glob('????????T??????Z-*.json'))) < 20)
         require(shutil.disk_usage(RELEASES).free > 2 * 1024**3)
         # Never reuse or overwrite an unverified candidate from a prior attempt.
         require(not (RELEASES / sha).exists())

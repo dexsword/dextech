@@ -127,6 +127,31 @@ class Controls(unittest.TestCase):
                 self.assertEqual(switch.call_args_list[-1].args, (d.RELEASES / OLD, b'old'))
                 self.assertEqual(json.loads(record.read_text())['outcome'], 'rolled-back')
 
+    def test_retention_keeps_ownership_until_release_unprotected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            evidence = root / 'evidence'
+            releases = root / 'releases'
+            backups = root / 'backups'
+            for path in [evidence, releases, backups]:
+                path.mkdir()
+            shas = [format(i, '040x') for i in range(1, 9)]
+            for i, sha in enumerate(shas):
+                (releases / sha).mkdir()
+                tag = f'2026010{i + 1}T000000Z-{sha}'
+                (evidence / (tag + '.json')).write_text(json.dumps({
+                    'sha': sha, 'previous': shas[max(0, i - 1)], 'created_release': True}))
+                (backups / (tag + '.db')).touch()
+            current = releases / 'current'
+            current.symlink_to(shas[-1])
+            with patch.object(d, 'EVIDENCE', evidence), patch.object(d, 'RELEASES', releases), \
+                    patch.object(d, 'BACKUPS', backups), patch.object(d, 'CURRENT', current):
+                d.retain()
+                self.assertEqual(len(list(evidence.glob('*.json'))), 6)
+                self.assertTrue((releases / shas[2]).exists())
+                self.assertFalse((releases / shas[1]).exists())
+                self.assertTrue(list(evidence.glob('*-' + shas[2] + '.json')))
+
     def test_idempotent_and_validation_never_mutate(self):
         for mode, sha in [('deploy', OLD), ('--validate', SHA)]:
             with tempfile.TemporaryDirectory() as tmp:
