@@ -1,7 +1,9 @@
 # Automatic production deployment over Tailscale
 
 Every push to `main` starts this deployment workflow, including the push created
-by merging the PR that enables it. `workflow_dispatch` remains a manual fallback.
+by a human merge or the dedicated merge App. A merge using the built-in
+`GITHUB_TOKEN` suppresses the downstream push event; guarded auto-merge therefore
+uses the configured GitHub App for its native squash request. `workflow_dispatch` remains a manual fallback.
 The deployment proceeds only after its checks and existing `production`
 environment protections pass; required approvals, if configured, still apply.
 The root-installed server implementation is a separately reviewed control plane;

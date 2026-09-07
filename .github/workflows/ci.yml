@@ -3,7 +3,7 @@ name: CI
 on:
   pull_request:
     branches: [main]
-    types: [opened, synchronize, reopened, edited]
+    types: [opened, synchronize, reopened]
   push:
     branches: [main]
   workflow_dispatch:
@@ -12,14 +12,11 @@ permissions:
   contents: read
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.action == 'edited' && !github.event.changes.base.ref.from && format('ignored-{0}', github.run_id) || github.event.pull_request.number || github.ref }}
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 jobs:
   checks:
-    # A skipped title/body edit must not add a second required `checks` context.
-    name: ${{ github.event.action == 'edited' && !github.event.changes.base.ref.from && 'Ignored PR edit' || 'checks' }}
-    if: github.event.action != 'edited' || github.event.changes.base.ref.from
     runs-on: ubuntu-latest
     timeout-minutes: 10
     defaults:

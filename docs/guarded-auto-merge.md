@@ -97,15 +97,12 @@ authorization. It never copies CI results or creates a custom `checks` context.
    reviewed SHA; all model filenames/explanations/summaries are withheld.
    Feedback skips closed PRs, including merges between publication and feedback.
 
-Per-PR concurrency has `cancel-in-progress: true`. Only opened, synchronize,
-reopened, ready-for-review, converted-to-draft, closed, and base-retarget edits
-start reviews. Both native CI and Codex admit `edited` only when
-`changes.base.ref.from` is present, so retargeting onto main starts both checks.
-Title/body-only edits skip all jobs and have unique ignored concurrency groups;
-their distinct review run names cannot supersede a current review. Ignored CI
-edits use a different job name so they cannot add a skipped required `checks`
-context. There are no status, check-run, or check-suite triggers. Updating the
-managed comment or checks cannot trigger another review. A rerun reclaims pending checks for the same candidate and changes their
+Per-PR concurrency has `cancel-in-progress: true`. Opened, synchronize, reopened,
+ready-for-review, converted-to-draft, and closed events trigger review. Both CI and
+review omit `edited`: title/body edits produce no extra runs. After retargeting
+an existing PR onto main, push to its branch or close/reopen it to start the new
+base evaluation. There are no status, check-run, or check-suite triggers, so
+managed comment or check updates cannot recursively trigger another review. A rerun reclaims pending checks for the same candidate and changes their
 run/attempt ownership. Completed checks are superseded by fresh pending checks: live GitHub retained
 the old conclusion when asked to reset a completed check, and duplicate older
 failed names can remain required. After confirming a replacement is pending and
@@ -316,9 +313,9 @@ approval requirements rely on GitHub's documented native enforcement and local
 contract tests; no settings were changed to simulate them.
 
 
-## CI waiting and base-retarget follow-up
+## Historical CI waiting and base-retarget follow-up
 
-The controller now delegates pending CI to [GitHub native auto-merge](https://docs.github.com/en/pull-requests/how-tos/merge-and-close-pull-requests/automatically-merging-a-pull-request),
+The prior follow-up delegated pending CI to [GitHub native auto-merge](https://docs.github.com/en/pull-requests/how-tos/merge-and-close-pull-requests/automatically-merging-a-pull-request),
 removing the ten-minute CI polling cutoff. This is independent of the v1.11
 wrapper rollback: the reviewer still has its existing 20-minute job limit, and
 merge-candidate discovery retains its bounded metadata retries. A missing native
@@ -334,9 +331,69 @@ publication, base-retarget triggering, ignored edit isolation, and preservation
 of the native required check name. The earlier live integration evidence above
 predates this follow-up; it does not claim a live retarget or slow-CI experiment.
 
-After this base-controlled workflow reaches main, validate a harmless eligible PR
+The prior follow-up proposed validating a harmless eligible PR
 with CI still pending when review completes: native squash auto-merge should be
 enabled, custom checks should pass on HEAD, and GitHub should retain the CI hold.
-Also retarget a harmless PR onto main and confirm both workflows start; a later
-title/body edit must start no jobs, cancel no active run, and create no second
-required `checks` context. Neither check requires changing branch protection.
+Its filtered-edit handling is superseded by the App change below, which removes
+`edited` entirely. Retargeted PRs now need a push or close/reopen event.
+
+
+## App-authenticated native auto-merge and production deployment
+
+The final auto-merge job now mints a short-lived installation token with the
+GitHub-owned `actions/create-github-app-token` **v3.2.0**, pinned to
+`bcd2ba49218906704ab6c1aa796996da409d3eb1`. It uses the configured numeric App ID
+through the release's supported `app-id` input. Only that job references:
+
+| GitHub configuration | Kind | Purpose |
+| --- | --- | --- |
+| `DEXTECH_MERGE_APP_ID` | Repository variable | Installed GitHub App ID |
+| `DEXTECH_MERGE_APP_PRIVATE_KEY` | Repository secret | App signing key; never print or retrieve it |
+
+The App is installed only on `dexsword/dextech` with Contents and Pull requests
+read/write. The workflow further scopes its token to that repository and those
+two permissions. Default post-job token revocation remains enabled. No App
+administration, Actions, Checks, workflow-write, or ruleset-bypass permission is
+needed. `GITHUB_TOKEN` in the request job is read-only and supplies the Actions,
+required-check, and review-metadata queries. The App token supplies only final
+head/base/merge revalidation, `enablePullRequestAutoMerge` with expected HEAD and
+SQUASH, and independent confirmation. Existing requests and read-back must name
+this App's bot identity; an old `github-actions[bot]` request cannot masquerade as
+an App request. There is no token fallback or immediate merge endpoint.
+
+The read-only Codex job, eligibility checks, publication and metadata-only feedback
+receive no App credentials. Missing configuration, insufficient App permissions,
+wrong identity, stale candidates, or failed token creation fail closed. Existing
+stale-request disarming is retained and must also revoke App-created requests.
+
+GitHub suppresses ordinary push workflows originating from `GITHUB_TOKEN`. App-
+requested native auto-merges let the resulting main push start the existing
+`Deploy production` workflow. That workflow retains push/main and manual dispatch,
+exact-SHA testing/audit, the production environment, Tailscale-only SSH, host
+verification, backup, health/Calendar checks, rollback, and non-cancelling
+production concurrency. No review job directly deploys, dispatches an arbitrary
+SHA, or receives production credentials.
+
+For setup, keep the existing three required GitHub Actions contexts, up-to-date
+branches, and resolved conversations. Do not give the App bypass access. For a
+missing/invalid key, update Settings → Secrets and variables → Actions → Secrets
+→ `DEXTECH_MERGE_APP_PRIVATE_KEY`; update the matching App ID under Variables.
+For permission rejection, update the App registration's Repository permissions
+and accept the installation permission update for dextech. Never paste keys into
+PRs, logs, reports, or chat. Rotate by installing a new App key, updating the
+secret, verifying an eligible PR, and revoking the old key. To disable, suspend
+the installation and disarm pending native requests; human merging and the
+existing manual deployment fallback remain available.
+
+This control change remains automatically ineligible. Its installation requires
+an explicit maintainer merge decision with required checks enforced. Because
+`pull_request_target` reads main, verify the newly installed App path with a fresh,
+harmless eligible PR afterward. Capture the review HEAD/merge binding, native
+merge actor, resulting squash commit, push-triggered deployment run, and public
+release SHA. Confirm delayed CI does not require another review and that token
+cleanup does not cancel native auto-merge. Confirm ordinary title/body edits
+start no runs and every required check stays on the source HEAD. Earlier PR #17
+and PR18–21 evidence describes the previous token implementation, not this App test.
+
+Sources: [official token action](https://github.com/actions/create-github-app-token/tree/bcd2ba49218906704ab6c1aa796996da409d3eb1),
+[GitHub workflow-trigger rules](https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/trigger-a-workflow#triggering-a-workflow-from-a-workflow).

@@ -1,25 +1,23 @@
 name: Codex Review
-# Irrelevant edits must neither cancel nor supersede an active review.
-run-name: "${{ github.event.action == 'edited' && !github.event.changes.base.ref.from && 'Ignored PR edit #' || 'Codex review PR #' }}${{ github.event.pull_request.number }}"
+run-name: "Codex review PR #${{ github.event.pull_request.number }}"
 
 # pull_request_target deliberately loads workflow/code/instructions from main.
 # Candidate files are read as data only; never run npm or scripts from the PR.
 on:
   pull_request_target:
     branches: [main]
-    types: [opened, synchronize, reopened, ready_for_review, converted_to_draft, closed, edited]
+    types: [opened, synchronize, reopened, ready_for_review, converted_to_draft, closed]
 
 permissions:
   contents: read
 
 concurrency:
-  group: codex-review-pr-${{ github.event.action == 'edited' && !github.event.changes.base.ref.from && format('ignored-{0}', github.run_id) || github.event.pull_request.number }}
+  group: codex-review-pr-${{ github.event.pull_request.number }}
   cancel-in-progress: true
 
 jobs:
   snapshot:
     if: >-
-      (github.event.action != 'edited' || github.event.changes.base.ref.from) &&
       github.repository == 'dexsword/dextech' &&
       github.event.pull_request.base.repo.full_name == 'dexsword/dextech' &&
       github.event.pull_request.base.ref == 'main' &&
@@ -229,8 +227,8 @@ jobs:
     timeout-minutes: 5
     permissions:
       actions: read
-      contents: write
-      pull-requests: write
+      contents: read
+      pull-requests: read
       checks: read
     outputs:
       confirmed_head: ${{ steps.request.outputs.confirmed_head }}
@@ -243,10 +241,24 @@ jobs:
           ref: ${{ needs.snapshot.outputs.base }}
           persist-credentials: false
           path: control
+      # Only this trusted final job gets App credentials. Scope the token to
+      # this repository and these two permissions; retain post-job revocation.
+      - name: Create scoped merge App token
+        id: merge-app
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          app-id: ${{ vars.DEXTECH_MERGE_APP_ID }}
+          private-key: ${{ secrets.DEXTECH_MERGE_APP_PRIVATE_KEY }}
+          owner: dexsword
+          repositories: dextech
+          permission-contents: write
+          permission-pull-requests: write
       - name: Request and confirm native squash auto-merge while checks are pending
         id: request
         env:
           GH_TOKEN: ${{ github.token }}
+          MERGE_APP_TOKEN: ${{ steps.merge-app.outputs.token }}
+          MERGE_APP_SLUG: ${{ steps.merge-app.outputs.app-slug }}
           HEAD_SHA: ${{ needs.snapshot.outputs.head }}
           MERGE_SHA: ${{ needs.snapshot.outputs.merge }}
           BASE_SHA: ${{ needs.snapshot.outputs.base }}
