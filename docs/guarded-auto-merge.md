@@ -1,322 +1,342 @@
-# Guarded PR auto-merge — Phase 1
+# Guarded auto-merge
 
-This policy reviews same-repository PRs targeting `dexsword/dextech:main` and
-requests **native GitHub squash auto-merge** only for eligible, reviewed heads.
-It does not merge through an immediate merge endpoint, approve a PR, dismiss a
-check, or bypass branch protection. Installing these files does not configure
-GitHub settings or secrets. This implementation PR itself is ineligible.
+The protected production branch is `dexsword/dextech:main`. CI tests and audits,
+a read-only Codex review, and a deterministic path policy guard squash auto-merge.
+GitHub branch protection remains authoritative. No immediate merge endpoint,
+approval bypass, or fabricated native CI result is used.
 
-## Required setup by Will
+## Required configuration
 
-1. Manually review and install this policy on `main`. `pull_request_target`
-   deliberately uses the base workflow, so a PR cannot bootstrap its own trusted
-   review. Keep the existing manual approval requirement during installation and
-   first-run validation. A human merge to `main` also triggers the existing
-   production deployment workflow; plan that separately.
-2. Add an Actions **repository secret** named `OPENAI_API_KEY`, or an organization
-   secret restricted to this repository. Use a dedicated, budget-limited OpenAI
-   project key with permission to call the Responses API/model. Never put the key
-   in a variable, file, comment, job log, artifact, or the `production` environment.
-   The review job does not use the production environment or its credentials.
-   This change does not create, read, or verify that secret.
-3. Protect `main`: require pull requests, retain all existing required approvals,
-   security checks, and conversation requirements; dismiss stale approvals;
-   require approval of the most recent reviewable push; **require branches to be
-   up to date before merging**; disallow force pushes/deletion and protection
-   bypasses (including administrator bypass where supported).
-4. Require the following exact check-run names, with **GitHub Actions** as their
-   expected source. Select them after the first trusted run registers them:
+Will must configure `OPENAI_API_KEY` as a repository Actions secret. Never put its
+value in files, logs, comments, artifacts, or PR text. The reviewer receives no
+production, SSH, Tailscale, Calendar, or deployment credentials. OpenAI API use
+incurs usage costs; each qualifying review can consume tokens. Set a project
+budget/alerts and monitor usage. Rotate the key in the OpenAI project and replace
+the GitHub secret; revoke the old key. To disable reviews, disable this workflow
+and revoke the key. To stop automatic merging, disable repository auto-merge and
+cancel pending native auto-merge requests. Keep required protections in place:
+missing reviews must block merging.
 
-   | Required check-run name | Meaning |
-   | --- | --- |
-   | `checks` | Existing `CI / checks`: complete deterministic tests, CI smoke/syntax/tracked-file checks, plus production dependency audit |
-   | `Codex Review / gate` | Exact-head, schema-validated review and successful revocation of any earlier auto-merge request |
-   | `Auto Merge / eligible` | Classification completed; success means eligible, neutral means manual review |
+Enable **Settings → General → Pull Requests → Allow auto-merge** and squash
+merging. In the enforcing main ruleset, require an up-to-date branch and these
+exact contexts, all sourced from **GitHub Actions** (integration ID 15368):
 
-   Keep other existing requirements. Do not require `deploy` (a post-merge job),
-   `auto-merge`, or every job in the target workflow. The two explicitly named
-   checks are created **on the PR head SHA**, not the base SHA of the target run.
-   GitHub accepts a neutral required check for manual merging. The requester
-   additionally demands actual eligibility `true` and a **success** conclusion.
-5. Enable repository **Allow squash merging** and **Allow auto-merge**. Confirm
-   organization/repository Actions policy allows the pinned official actions and
-   the explicitly declared job permissions. Do not grant workflow approval
-   permission, bypass rights, or a broadly privileged PAT. Leave all production,
-   SSH, Tailscale and deployment configuration unchanged.
+- `checks` (the `CI / checks` job)
+- `Codex Review / gate`
+- `Auto Merge / eligible`
 
-Configuration is part of enforcement: code cannot install branch protection.
-The required checks must exist before enabling unattended operation. Do not use
-merge queues in Phase 1: `merge_group` candidates are not implemented.
+Keep the configured approval and review-thread requirements. No setting change is
+part of this PR. On 2026-09-07 the live repository already enabled auto-merge and
+squash; effective rules required the three contexts above, strict up-to-date
+branches, resolved threads, and zero mandatory approving reviews. Any additional
+approval requirement remains authoritative.
 
-## Trust boundary and permissions
+## Source, merge and run identity
 
-The trigger is `pull_request_target` for opened, synchronized, reopened, edited,
-ready-for-review and converted-to-draft PRs against `main`. There are no path
-filters. The job guard and live API snapshot both require head and base repository
-exactly `dexsword/dextech`. Forks receive neither review credentials nor an
-auto-merge request. Their required review check will remain unavailable; bringing
-a vetted contribution onto a same-repository branch is a separate maintainer
-operation. Drafts can be reviewed but cannot be enabled for auto-merge.
+`HEAD_SHA` is the exact source reviewed, classified, and passed as native
+`expectedHeadOid`. All three required checks belong to **HEAD_SHA** here.
+`MERGE_SHA` independently identifies GitHub's synthetic candidate, validated
+against the live merge ref and its ordered parents `[BASE_SHA, HEAD_SHA]`.
+`BASE_SHA` must equal current main. The full-history source checkout must descend
+from that trusted base. None of these immutable bindings is silently replaced
+once captured. A changed candidate needs a new evaluation.
 
-All executable control code, JSON Schema, model configuration and review rules
-come from the exact base SHA. Candidate checkout uses the exact head SHA and
-`persist-credentials: false`. It must contain the current base as an ancestor;
-otherwise update the branch and rerun. No candidate dependency installation,
-build, test, script, hook, Git text conversion, or source instruction runs in the
-privileged review workflow. Existing ordinary CI runs independently without the
-OpenAI key. CI now includes `npm audit --omit=dev --audit-level=high`, so high or
-critical production findings block its required check before merge.
+This is based on live evidence, not only mocks. On 2026-09-07, PR #17 head
+`a3484cac3e9b7286fa373d5f583677e639c9261f` had all three contexts marked
+`isRequired: true` by GraphQL on its source commit. Its potential merge commit
+`78ee3678ed382246b01af2539fd8652ea6eacf5f` had no check rollup. REST check runs,
+check suites, and statuses agreed; CI run/check metadata referenced the head.
+PR #13 independently showed the same placement. Both merge-ref and commit REST
+endpoints returned the correct ordered parents. The real readiness GraphQL query
+used by this implementation also passed against PR #17's metadata.
 
-Git object readers use literal paths, disable external diffs/text conversion and
-hooks, reject special file types, and bound input. They supply complete changed
-text before/after plus relevant application/test context. The model works in a
-clean temporary directory outside either checkout, with trusted isolated config,
-project instruction discovery disabled, shell/execution/browser/plugin/agent
-features disabled, no additional MCP servers and `web_search = "disabled"`.
-All PR text and source are untrusted data, including edits to `AGENTS.md`.
-Only the base's `Code Review Rules` become review instructions.
+A synthetic merge **checkout** in native CI does not imply its check run is
+attached to that commit. [GitHub documents](https://docs.github.com/en/pull-requests/how-tos/merge-and-close-pull-requests/troubleshooting-required-status-checks#conflicts-between-head-commit-and-test-merge-commit)
+that a test-merge status can take precedence over head statuses. Therefore this
+implementation rejects a split: any merge-commit check/status rollup prevents
+authorization. It never copies CI results or creates a custom `checks` context.
 
-The review job has **only `contents: read`** and the single OpenAI API key input.
-The official action retains `safety-strategy: drop-sudo` plus `sandbox: read-only`
-on a fresh GitHub-hosted Ubuntu runner. Its protected Responses proxy is the
-necessary model network path; no network or shell tool is exposed to the model.
-The action is the final substantive step. Never run its privilege-dropping setup
-on DexServe or another persistent/self-hosted production runner.
+## Sequence and lifecycle
 
-Separate fresh jobs create/publish checks (`contents: read`, `checks: write`).
-The order is deliberately:
+1. `snapshot` reads and validates the live same-repository PR against the event
+   head and current main. It checks run ownership, revokes stale native
+   auto-merge, then immediately creates or resets the two custom checks to pending
+   **on the source head**, before waiting for merge discovery. Closed PR events
+   revoke stale requests and exit without review. Forks never reach a key-bearing
+   job. Drafts cannot request auto-merge.
+2. Merge discovery retries null/missing readiness and merge ref/commit 404s with
+   1, 2, 4, 8, 15, and 30 second backoff. Temporary 502/503/504 responses are
+   retryable. Each attempt reads current main and PR state, preserving the captured
+   head/base. Confirmed conflicts, closed/changed PRs, malformed metadata, and
+   permission errors fail closed. A five-minute snapshot limit and 20-second API
+   timeouts bound prolonged outages; a later fresh run is needed after exhaustion.
+3. `disarm` independently verifies revocation before eligibility/review. The
+   latter jobs read exact Git objects; neither executes candidate scripts.
+4. The write job does not poll for CI completion or impose a CI deadline.
+   It independently validates review schema/confidence, eligibility, both pending
+   checks and their ownership,
+   current head/base/merge, required-check source/placement and valid state,
+   repository auto-merge/squash settings, and the shape of human-review metadata.
+   Immediately before mutation it re-reads the PR; GitHub's `expectedHeadOid`
+   atomically binds the native request to the reviewed head. Required human
+   approvals, changes-requested reviews, and unresolved conversations remain held
+   by GitHub itself: enabling native auto-merge does not satisfy those requirements.
+   Native CI must exist on the exact head and be successful or in a recognized
+   pending state with no conclusion. Missing, malformed, failed, cancelled, timed-out,
+   skipped, or neutral CI is rejected. Native auto-merge also waits for queued/running
+   CI, however long it takes; completing CI later needs no new event or model review.
+   A failure after authorization still blocks merging through branch protection.
+   Human requirements can likewise be satisfied later without another review.
+5. Request **native squash auto-merge while custom checks are pending**. Confirm
+   the response and a fresh independent live read. Only then may `publish` release
+   the custom checks, revalidating candidate, prerequisites, and run/check ownership
+   before each update. GitHub performs the merge when its rules are satisfied.
+6. Ineligible protected changes remain for manual review: eligibility is neutral,
+   not an ordinary CI failure. Codex must still pass. Feedback is a single managed
+   comment containing only fixed text, severity counts, bounded confidence, and
+   reviewed SHA; all model filenames/explanations/summaries are withheld.
+   Feedback skips closed PRs, including merges between publication and feedback.
 
-1. `snapshot` creates both custom PR-head checks **in progress**.
-2. `disarm` revokes any earlier native request before `eligibility` and `review`
-   evaluate the captured candidate. It has `contents: write`, `pull-requests: write`
-   solely to disable stale requests. Failure blocks evaluation/publication.
-3. `eligibility` and the read-only `review` run. Ordinary deterministic CI continues
-   independently; GitHub must still enforce its required `checks` result.
-4. For eligible non-draft PRs, `auto-merge` validates the structured review again
-   (confidence >= 0.95, no blocking findings, successful review/disarming and
-   eligibility). It checks both custom checks are still **in progress** with null
-   conclusions and this run's IDs/head/attempt binding, then rereads current main
-   and the open, non-draft, same-repository PR immediately before the mutation.
-5. While the checks remain pending, it requests `enablePullRequestAutoMerge` with
-   `expectedHeadOid` and `mergeMethod: SQUASH`. It validates the mutation response's
-   PR ID, head and method, then independently reads back current main and PR to
-   confirm native squash auto-merge is enabled. An already-enabled matching squash
-   request uses the same checks/read-back without another mutation; another method
-   or a stale candidate fails closed.
-6. Only after the request job succeeds does `publish` validate its head/base/run
-   confirmation, reread live PR/main and the enabled squash request, independently
-   validate the review, and complete `Codex Review / gate` and
-   `Auto Merge / eligible` successfully. GitHub can then observe the completed
-   requirements and merge when every configured protection/approval permits it.
+Per-PR concurrency has `cancel-in-progress: true`. Only opened, synchronize,
+reopened, ready-for-review, converted-to-draft, closed, and base-retarget edits
+start reviews. Both native CI and Codex admit `edited` only when
+`changes.base.ref.from` is present, so retargeting onto main starts both checks.
+Title/body-only edits skip all jobs and have unique ignored concurrency groups;
+their distinct review run names cannot supersede a current review. Ignored CI
+edits use a different job name so they cannot add a skipped required `checks`
+context. There are no status, check-run, or check-suite triggers. Updating the
+managed comment or checks cannot trigger another review. A rerun reclaims pending checks for the same candidate and changes their
+run/attempt ownership. Completed checks are superseded by fresh pending checks: live GitHub retained
+the old conclusion when asked to reset a completed check, and duplicate older
+failed names can remain required. After confirming a replacement is pending and
+owning it, snapshot renames obsolete custom checks with a fixed `superseded ID`
+suffix. Their historical conclusions are preserved. Native CI is never renamed
+or rewritten. Snapshot requires the API response to confirm pending state, null
+conclusion, and exact head/ownership before proceeding. Old runs,
+old receipts, cancelled attempts, and runs superseded by a newer same-PR run
+cannot authorize. Checks from an older source SHA never authorize a newer one.
+GitHub API reads and mutations are separate operations; repeated ownership and
+candidate checks supplement concurrency and strict branch protection, rather
+than claiming those operations are atomic.
 
-The request job has `contents: write`, `pull-requests: write`, `checks: read`;
-it cannot complete checks. It receives structured review data for validation,
-but no OpenAI key, deployment credentials, or candidate checkout. The publisher
-cannot request a merge. Codex remains the final substantive step of its read-only
-job; no PR-controlled code executes in either write job. Native auto-merge is
-requested **before** successful required checks, because GitHub may reject enabling
-it on a PR that is already immediately mergeable. No immediate merge fallback exists.
+## Review trust and eligibility
 
-Failure to request or confirm auto-merge leaves both authorization checks pending
-or failed, never successful. Cancellation or failure before publication leaves
-pending checks; rerun the complete trusted workflow to recover. Confirmation is
-bound to the workflow run/attempt, captured head and base, never just a boolean.
-If publication is interrupted after one check succeeds, the other remains pending
-and still blocks merging. GitHub offers no transaction across the two check writes.
-Strict up-to-date protection remains required: the head precondition is atomic,
-but reading main and publishing checks are separate API operations.
+Automatic runs use `pull_request_target`: workflow, policy and control code come
+from the base. Exact candidate checkouts disable credentials, fetch full history
+and disable tags. Candidate content, filenames, comments, commits, and PR text
+are untrusted data. The review job has only `contents: read`; the official
+`openai/codex-action` is its final substantive step, read-only with `drop-sudo`.
+Pinned release: **v1.11**, commit
+`52fe01ec70a42f454c9d2ebd47598f9fd6893d56`; Codex CLI **0.153.4**.
+Candidate configuration/instructions are disabled; trusted prompt/config/schema
+are supplied separately, with shell tools and unnecessary networking disabled.
+Missing secrets/action failure/output or invalid JSON/schema fail closed.
+Confidence must be at least **0.95**, verdict `pass`, with **no blocking findings**.
+P0/P1 findings always fail. The model cannot push, approve, merge, dismiss checks,
+or bypass policy. GitHub writes occur in separate jobs without the API key.
 
-Ineligible changes skip the request job: a valid review gets a successful gate and
-**neutral** eligibility for manual review. Drafts also skip requesting auto-merge;
-a valid draft review can complete its checks, but marking it ready triggers a new
-run. A changed ready/draft state fails closed if it no longer matches the skipped
-request path. This hotfix changes protected control/workflow paths and is itself
-ineligible; it requires manual review and manual squash merge.
+The allowlist in `.github/codex/policy.cjs` fails closed for unknown paths and file
+modes. Workflows, actions, review controls/policy/AGENTS, ops/deployment and scripts,
+auth/credentials, database/schema/migrations, destructive operations, backup and
+rollback, Calendar/payment/admin paths, and sensitive filenames are protected.
+Ordinary UI/content, allowlisted application paths, docs and tests may qualify.
+Only tightly validated dev-only patch lockfile changes qualify as dependencies.
+This hotfix is itself protected/ineligible and cannot auto-merge.
 
-Failures emit only fixed diagnostic categories: `permission-or-repository-setting-rejection`,
-`pr-already-immediately-mergeable`, `stale-head-or-base`, `draft-or-closed-pr`,
-`auto-merge-unavailable`, `unexpected-github-response`, `invalid-review-or-eligibility`,
-or `required-checks-not-pending`. API status/known error patterns select these
-trusted strings; raw response bodies, exception text and model output are never
-included in diagnostics. Unknown failures use `unexpected-github-response`.
+## Maintainer validation and recovery
 
-## Review decision and eligibility
+Automatic review accepts only base-controlled `pull_request_target` events. There
+is no production `workflow_dispatch` override and no input selecting executable
+control code. Jobs that inspect run ownership explicitly declare `actions: read`;
+the reviewer retains only `contents: read`. For a recovery run, use GitHub's rerun
+UI on the trusted base-controlled workflow or push a fresh candidate commit.
 
-The shared JSON Schema requires `verdict`, numeric `confidence` in `[0, 1]`,
-`blocking_findings`, and `summary`, with no unknown fields. Findings require
-severity `P0`–`P3`, file, nullable positive line bounds and an explanation.
-The publisher independently validates that schema with a small dependency-free
-validator that rejects unsupported schema keywords. Passing requires verdict
-`pass`, **confidence >= 0.95**, **zero blocking findings**, successful action/job
-completion and successful revocation. Eligible ready PRs also require confirmed
-native squash auto-merge before successful checks. Every P0/P1 finding therefore fails, as do
-other blocking findings. Prose is never parsed as approval. Empty/malformed or
-masked/missing output, API/action error, timeout, and low confidence fail closed.
-Cancelled runs can leave an in-progress check, which also blocks merging; rerun
-the entire trusted workflow to recover. No `continue-on-error` path passes review.
+Before installation, an isolated maintainer-owned push harness can execute vetted
+control code against a fixed disposable PR. Its adapter reads live PR metadata,
+constructs the equivalent base-controlled event, and explicitly checks out the
+vetted harness commit in control jobs. Candidate files remain data only. This
+adapter is not part of the production workflow or PR diff. Never select arbitrary
+contributor code for such a harness.
 
-Valid structured failures with confidence >= 0.95 and blocking findings create or
-update one managed PR comment bound to the exact reviewed head. An independent
-output allowlist permits only fixed status text, counts by schema-validated
-severity, bounded numeric confidence and the validated snapshot SHA. Model-supplied
-filenames, line locations, explanations and summaries are never published.
-Formatting sanitization and secret-pattern matching cannot establish that arbitrary
-model text is safe: it may quote credentials, customer/Calendar data or exceptions.
-The comment deliberately withholds that text rather than attempting redaction.
-A later clean high-confidence exact-head review updates the same comment to
-resolved. Malformed, missing, low-confidence or otherwise nonactionable output
-creates no comment. The feedback job is separate from the read-only reviewer and
-has only `contents: read` plus `pull-requests: write`. Comment discovery searches
-all pages (up to 10,000 comments); duplicate managed comments or an incomplete
-search fail closed. The PR head is rechecked immediately before writing. GitHub
-comment writes have no atomic head precondition, so feedback always labels the
-reviewed SHA and never authorizes a merge.
+For a first live test, push a harmless documentation commit to a disposable branch
+from current main and open a PR. Let native CI start normally. Use the isolated
+vetted harness with that fixed PR number; its matching concurrency group replaces
+any old base-controlled review. Record head/base/merge and run IDs. Push a second
+harmless commit to verify stale-run cancellation, then trigger the harness again.
+Check that all required checks belong to the latest head and are marked required,
+the old run cannot authorize, native squash is enabled before check success, and
+GitHub merges without intervention. Do not manually publish checks or bypass
+requirements. After installing the tested hotfix, synchronize PR #13 with current
+main for a fresh automatic evaluation; that is a separate operation.
 
-Classification is deterministic, case-sensitive for the allowlist, with explicit
-case-insensitive sensitive-name exclusions. Both sides of renames and deletions
-are evaluated. Executable file modes, symlinks and submodules are ineligible.
+The default GITHUB_TOKEN suppresses downstream workflow events caused by its
+merge. This test must not deploy production; production workflow dispatch remains
+a separately authorized action. No reusable merge token is introduced here.
 
-- All `.github/**`, `ops/**`, `scripts/**`, `AGENTS.md` at any depth, review and
-  auto-merge controls/tests, and deployment/rollback paths are manual-only.
-- Authentication, authorization, OAuth, secret/env loading, credentials,
-  sessions/tokens/permissions, database/schema/migration/destructive operations,
-  backup/restore, payment and Calendar names are excluded. `server.js` is entirely
-  excluded because those responsibilities share one file. `gcal-auth.js`,
-  `stripe-import.js`, `admin.html` and `cancel.html` are also manual-only.
-- The root UI/content allowlist is `index.html`, `support.html`, `privacy.html`,
-  `terms.html`, `style.css`, `script.js`, `tests.js`, `README.md`. Ordinary
-  `docs/**/*.md`/`.txt` and `test/*.test.js` names are eligible only if they do not
-  match a protected name. Unknown namespaces, unusual characters and ambiguous
-  paths are manual-only. New code namespaces require a reviewed policy update.
-- Dependency eligibility is deliberately narrow: **only `package-lock.json`**,
-  lockfile v3, 1–10 existing dev-only package patch upgrades, same major/minor,
-  registry.npmjs.org tarballs with SHA-512 integrity, no lifecycle-script packages,
-  sensitive package names, changed dependency ranges/metadata, new/deleted packages
-  or runtime changes. Manifest changes and other dependency updates are manual-only.
+Fixed diagnostic categories include stale head/base, stale/unavailable merge,
+merge discovery timeout, required CI missing, invalid, or failed, unexpected human-review metadata,
+superseded/cancelled run, permission/settings rejection, immediately mergeable,
+invalid review/eligibility, non-pending checks, unavailable auto-merge, and
+unexpected response. Raw API/error/model bodies and credentials are never logged.
 
-An ineligible PR gets a **neutral** eligibility result and no auto-merge request;
-it can be merged manually after review and every required protection passes.
-Eligibility is not evidence of correctness: the model must still identify new
-sensitive behavior or defects introduced under an otherwise ordinary filename.
+## Live integration evidence (2026-09-07)
 
-## Pins and operational limits
+The local gh token could create PRs but dispatch returned HTTP 403 with
+`X-Accepted-Github-Permissions: actions=write`. Its effective Actions write
+permission was unavailable. No token or repository permissions were changed.
+An isolated, maintainer-owned `ci/guarded-merge-validation` branch instead used a
+push-only harness with a fixed disposable PR input and the vetted control code.
+Only the trigger/input adapter differed; no PR candidate code was executed by a
+privileged job. The harness is not part of this PR or the main workflow.
 
-- Official [`openai/codex-action` release tag `v1.12`](https://github.com/openai/codex-action/tree/v1.12):
-  **`86365089eb2b84e0a8fb0717b304f8bdcb13b20e`**. This upstream version is an
-  annotated release tag; upstream has no separate GitHub Release object for it.
-- Codex CLI and Responses proxy: **`0.153.4`**, explicitly pinned by action input.
-  Trusted configuration selects **`gpt-5.4`**, high reasoning effort. Account/model
-  availability must be verified during first run; unavailability fails closed.
-- `actions/checkout` **v6.0.2**, `de0fac2e4500dabe0009e67214ff5f5447ce83dd`.
-- Existing CI `actions/setup-node` **v6.3.0**, `53b83947a5a98c8d113130e565377fae1a50d02f`.
+[PR #18](https://github.com/dexsword/dextech/pull/18) used two harmless documentation
+commits. On the second push, obsolete review runs `34111107752`, `34111026139`,
+`34111280261`, and `34111283910` were cancelled. The successful authorization path
+was [run 34111291990](https://github.com/dexsword/dextech/actions/runs/34111291990).
+Its immutable source head was `bce137a6e9c895190eb89fd1cf0d37a7b7ea2eb9`, base
+`03aafa3b87b2dbe6f9c0808ae46cb5d1d06deb70`, and synthetic candidate
+`7b6b874cd4df02c01999af4a909a0d670c952122`.
 
-Review limit: 100 changed paths, 220,000 bytes per text blob, 600,000 bytes in the
-complete prompt, 32,000 bytes in the verdict, 30 findings and 20 minutes for the
-review job. No silent truncation. Binary/unsupported or larger changes fail the
-review gate and require a separately designed review path; eligibility alone
-never overrides an incomplete review. Full reviews rerun on relevant PR events,
-including edits, so **OpenAI API usage is billable and can accumulate**. Set project
-budgets/alerts and monitor usage. Confidence is a model judgment, not a calibrated
-probability or substitute for tests/human approvals.
+| Required context | Check ID | SHA |
+| --- | --- | --- |
+| `checks` | 101707883826 | `bce137a6e9c895190eb89fd1cf0d37a7b7ea2eb9` |
+| `Codex Review / gate` | 101707974042 | `bce137a6e9c895190eb89fd1cf0d37a7b7ea2eb9` |
+| `Auto Merge / eligible` | 101707985180 | `bce137a6e9c895190eb89fd1cf0d37a7b7ea2eb9` |
 
-Custom check summaries contain only sanitized metadata; raw model text is not
-copied to check summaries, comments or uploaded artifacts. Managed comments use
-only the explicitly allowlisted metadata described above; no model free text. The
-upstream action and Actions output/environment plumbing can put review text in
-Actions logs. Only public repository source is sent;
-do not commit sensitive information or enable debug tracing. Existing GitHub log
-retention/access controls apply. Temporary review files remain only on disposable
-runners. Production, SSH, Tailscale and Calendar credentials are never supplied.
+GitHub Actions enabled native SQUASH at 10:25:49 UTC. At 10:25:58 both custom
+checks were observed pending while native auto-merge was enabled. At 10:26:05 the
+review gate passed while eligibility remained pending. At 10:26:09 GitHub merged
+without manual intervention as `5d3ec2471ce7db414eb60f8d8eaaabbe206a02de`.
+All three required contexts ended successful on the same source head. The optional
+feedback job then failed because the PR had already merged; that observed race is
+fixed by the closed-PR no-op regression and verified in the final test below.
 
-## Important limitations before enabling unattended operation
+Final [PR #19](https://github.com/dexsword/dextech/pull/19) completed end-to-end in
+[run 34111543766](https://github.com/dexsword/dextech/actions/runs/34111543766):
+**snapshot, disarm, eligibility, review, auto-merge, publish, and feedback all
+succeeded**. Native [CI run 34111542594](https://github.com/dexsword/dextech/actions/runs/34111542594)
+also succeeded. The obsolete base review `34111542653` was cancelled. The harness
+control code was identical to this PR's implementation (the adapter only selected
+its trusted control revision and fixed PR number).
 
-- GitHub settings remain authoritative and must be configured by Will. This task
-  neither changes them nor proves the live required-check/auto-merge setup.
-- Trust maintainers and repository writers with workflow-edit rights. A required
-  check name plus the GitHub Actions App source does **not** distinguish this
-  workflow from another writer-controlled workflow that can request `checks: write`.
-  The normal automation validates its own run/attempt/IDs, but that cannot stop a
-  malicious repository writer from forging names or directly changing automation.
-  Where available, enforce a ruleset requiring the trusted workflow itself and
-  protect policy/workflow changes with independent owner review. Strong isolation
-  from hostile repository writers requires a separately permissioned GitHub App or
-  organization-controlled required workflow; it is not provided by a repository
-  `GITHUB_TOKEN`. Do not claim this gate provides that stronger security boundary.
-- Native requests use `GITHUB_TOKEN`, with no PAT or additional secret. GitHub
-  suppresses downstream workflows for events generated by that token. Therefore
-  **do not assume a bot auto-merge triggers the existing push-based production
-  deployment**. Confirm this in first-run validation and use the existing manual
-  production workflow when appropriate. A future dedicated App identity can
-  address event propagation, but is outside Phase 1. No deployment bypass or
-  automatic dispatch is added. See [GitHub token event behavior](https://docs.github.com/en/actions/concepts/security/github_token).
-- Human/administrator actions can enable auto-merge or alter protections outside
-  this workflow. Do not manually re-enable auto-merge on ineligible PRs. Fork and
-  unsupported/binary PRs do not have a bypass path in this implementation.
-- Local tests use synthetic Git objects/API responses; no paid Codex review or
-  live auto-merge mutation was run for this change. GitHub-hosted privilege dropping,
-  account model access, organization permissions and check display still require
-  the controlled first run below.
+| Required context | Check ID | Source SHA |
+| --- | --- | --- |
+| `checks` | 101708696333 | `5f79e310733f396716e432a9faa36d63c8e99f25` |
+| `Codex Review / gate` | 101708743613 | `5f79e310733f396716e432a9faa36d63c8e99f25` |
+| `Auto Merge / eligible` | 101708750781 | `5f79e310733f396716e432a9faa36d63c8e99f25` |
 
-## First-run validation (Will, after separate installation approval)
+Base was `5d3ec2471ce7db414eb60f8d8eaaabbe206a02de`; synthetic candidate was
+`e2143a807c028409cf9d1b2191f459eec140959f`. GitHub Actions enabled native SQUASH at
+10:28:34 UTC. Both custom checks were still pending at 10:28:38; all three required
+checks were successful at 10:28:53. The whole review workflow completed successfully,
+and GitHub merged automatically at **10:29:20 UTC**, producing
+`a7902a4b9676bb01af48ab8109d2df3e2a1dcfe7`. No immediate merge endpoint or manual
+merge was used. No production/deployment workflow was triggered by these token-
+originated test merges. PR #17 remains for manual review; PR #13 was not changed.
 
-1. Keep required independent human approval outstanding so no test PR can merge.
-   Configure the key and protected checks, then open a same-repository **draft**
-   PR with a harmless `README.md` edit on current main. Confirm normal CI and
-   audit run, the exact-head Codex check passes, eligibility succeeds, and no
-   auto-merge request exists. Inspect only sanitized output and check metadata.
-2. Mark it ready while leaving the required approval outstanding. Confirm native
-   squash auto-merge becomes enabled but GitHub waits for the missing approval/CI.
-   Verify the displayed head matches the reviewed head. Do not approve/merge until
-   separately authorized, since a main merge may have deployment consequences.
-3. Add a protected workflow/policy path to that still-unmerged PR. Confirm the old
-   request is revoked, the new head is reviewed, eligibility is neutral and the
-   PR stays open without a replacement request. Close the fixture afterwards.
-4. Use `node --test test/codex-review.test.js` for malformed verdict, confidence,
-   blocking finding, stale-head, timeout, revocation and atomic request cases;
-   never inject an API key into test fixtures. A fork fixture should skip the
-   privileged jobs and produce no auto-merge request or API usage.
-5. Check a fully authorized eligible merge later for downstream CI/deploy event
-   propagation; retain the existing manual production fallback. Do not lower
-   branch protection to make a failing first run pass.
+Final local validation: clean npm ci, **85 Node tests**, **9 deployment-control
+tests**, CI smoke and synthetic health, actionlint, ShellCheck, YAML, JSON Schema,
+TOML, JavaScript/Python/shell syntax, and production audit passed. All requested
+validators were available. Audit found zero high/critical findings; one existing
+low and one moderate advisory remain. Security inspection confirmed base-controlled
+automatic execution, exact source/merge/base binding, separate read-only reviewer
+and write jobs, no candidate execution with write credentials, no secret-bearing
+logs, and no check/approval bypass. GitHub's separate reads and writes remain
+non-atomic; exact-head mutation binding and branch protections are still required.
 
-## Rotation and disable procedure
+The hotfix's own review also required explicit `actions: read` on snapshot,
+publish and auto-merge (their run-ownership REST reads), and removal of the
+permanent dispatch override. Both were corrected. The production workflow now
+accepts only `pull_request_target` from main, with no alternate control-ref input.
+The isolated test adapter alone synthesizes the trusted event for pre-installation
+validation; it is never merged into production.
 
-Rotate the dedicated OpenAI project key, replace the `OPENAI_API_KEY` repository
-secret, verify a controlled draft review, then revoke the old key. Never echo or
-store either value in the repository or a report.
+The final base-only version (with explicit Actions read permissions) passed
+[run 34113271843](https://github.com/dexsword/dextech/actions/runs/34113271843) for
+[PR #20](https://github.com/dexsword/dextech/pull/20). All seven jobs succeeded,
+including feedback after the merge. Source was
+`f104872fc30022cfb24d2789b4070680ee222ceb`, base
+`a7902a4b9676bb01af48ab8109d2df3e2a1dcfe7`, synthetic merge
+`ba9bc3871eaf49e1be6a04cd9d09d6ec6beaffdc`. Check IDs were `101714136509`
+(`checks`), `101714201415` (`Codex Review / gate`), and `101714211384`
+(`Auto Merge / eligible`), all on that source SHA and all successful.
+GitHub Actions enabled native SQUASH at **10:49:16 UTC** while the custom checks
+were still pending; GitHub automatically merged at **10:49:36 UTC** as
+`95d7244c06587e73d8c7a5d8ba4fc381af229392`. This verified the base-only execution path; the final rerun/conversation test
+below additionally covers supersession and deferred human review holds. The production workflow has no dispatch path.
 
-To stop auto-merging, disable repository auto-merge and disable any pending native
-requests first. To stop API spending, disable the **Codex Review** workflow and
-revoke/remove the OpenAI key. Required reviews will then block merges; that is
-intentional fail-closed behavior. Any replacement manual review policy or removal
-of required checks is a separate administrator decision, not an automatic fallback.
+Control-change review packets include their unchanged policy, output schema,
+configuration and CI dependencies as untrusted data. Unrelated application context
+is reserved for application changes. All changed files remain complete before/after
+Git blobs; no patch is truncated, no candidate instructions become trusted, and
+no candidate scripts are executed. This improves relevance for large control
+reviews without changing the confidence threshold or authorization conditions.
 
-References: [official Codex Action documentation](https://developers.openai.com/codex/github-action),
-[upstream security configuration](https://github.com/openai/codex-action/tree/86365089eb2b84e0a8fb0717b304f8bdcb13b20e),
-[GitHub native auto-merge](https://docs.github.com/en/pull-requests/collaborating-with-pull-requests/incorporating-changes-from-a-pull-request/automatically-merging-a-pull-request),
-[required status checks](https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/managing-protected-branches/about-protected-branches#require-status-checks-before-merging).
+Human approval/thread readiness is deliberately not a prerequisite for requesting
+native auto-merge: [GitHub's native mechanism](https://docs.github.com/en/pull-requests/how-tos/merge-and-close-pull-requests/automatically-merging-a-pull-request)
+waits for all enforced reviews and checks before merging. The controller never
+approves a review, dismisses a blocking review, or resolves a thread. This avoids
+stranding a passing Codex review when a human approves or resolves a conversation
+later (neither event re-runs this workflow). Missing approvals and unresolved
+required conversations still block the actual merge under the enforcing ruleset;
+Codex failures, CI failures and stale candidates still cannot enable auto-merge.
+The live ruleset has no bypass actors.
 
 
-## After manually installing the request-order hotfix
+The final implementation passed [run 34119147421](https://github.com/dexsword/dextech/actions/runs/34119147421)
+for [PR #21](https://github.com/dexsword/dextech/pull/21). All seven jobs succeeded.
+Source was `acb49fbc9249f964d6172cb09ae80b3133b546f0`, base
+`95d7244c06587e73d8c7a5d8ba4fc381af229392`, synthetic merge
+`e77408374267032340e7a2a4420e88ccffd59980`.
 
-1. Manually review and squash merge the hotfix PR, preserving branch protection.
-   This is an ineligible control change. A human merge to main follows the existing
-   production deployment workflow; that is a separate authorized operation.
-2. Synchronize PR #13's branch with current `main` (for example, GitHub's **Update
-   branch** action if available). That push must produce a new exact head and a
-   `synchronize` run using the corrected base workflow. A rerun of an old workflow
-   run is not a substitute for bringing the branch up to the new base.
-3. Observe `snapshot` → `disarm` → `eligibility`/`review` → `auto-merge` → `publish`.
-   During request/confirmation both custom checks must remain pending. Confirm
-   native squash auto-merge is enabled before they turn successful. Existing CI
-   and all required approvals remain authoritative; do not manually enable an
-   immediate merge or weaken required checks to force progress.
-4. If requesting/confirming fails, use only the fixed diagnostic category and
-   leave the checks blocked. Correct the external prerequisite separately and
-   rerun the complete trusted workflow on the current synchronized head.
-5. After GitHub performs an authorized merge, verify downstream workflow behavior.
-   The existing GITHUB_TOKEN event-suppression limitation and manual production
-   deployment fallback still apply; this hotfix adds no deployment dispatch.
+| Required context | Check ID | Source SHA |
+| --- | --- | --- |
+| `checks` | 101732849296 | `acb49fbc9249f964d6172cb09ae80b3133b546f0` |
+| `Codex Review / gate` | 101733029156 | `acb49fbc9249f964d6172cb09ae80b3133b546f0` |
+| `Auto Merge / eligible` | 101733052101 | `acb49fbc9249f964d6172cb09ae80b3133b546f0` |
 
-The implementation task does not synchronize or otherwise modify PR #13, change
-settings, install secrets, merge, deploy, or exercise a live auto-merge mutation.
+This test exposed completed-check duplication: older failed custom checks remained
+`isRequired: true` alongside newer successful checks. The corrected snapshot first
+confirmed pending replacements, then preserved obsolete results under historical
+names. Live GraphQL confirmed those historical checks became non-required; only
+the current custom checks and native CI remained required. No native check was
+changed, no conclusion was fabricated, and no required context was removed.
+A low-confidence intermediate review also rejected authorization as designed;
+the disposable documentation wording was corrected before the final review.
+
+Native SQUASH was enabled at **11:57:23 UTC** while both custom checks were pending.
+By 11:57:47 all required checks passed, but GitHub still blocked merging on a
+clearly labelled, intentionally unresolved integration conversation. Only that
+test conversation was resolved by the maintainer; the workflow never resolves
+threads or approves/dismisses reviews. GitHub then merged automatically at
+**11:58:15 UTC**, producing `e47c53f7d370e672661fd3ea83e0ecf241bb0f62`, without
+another review run or a manual merge. This verifies the enforced conversation
+hold and release. Required approval count is currently zero, so nonzero human
+approval requirements rely on GitHub's documented native enforcement and local
+contract tests; no settings were changed to simulate them.
+
+
+## CI waiting and base-retarget follow-up
+
+The controller now delegates pending CI to [GitHub native auto-merge](https://docs.github.com/en/pull-requests/how-tos/merge-and-close-pull-requests/automatically-merging-a-pull-request),
+removing the ten-minute CI polling cutoff. This is independent of the v1.11
+wrapper rollback: the reviewer still has its existing 20-minute job limit, and
+merge-candidate discovery retains its bounded metadata retries. A missing native
+CI context or API outage still fails closed; this change does not invent results
+or automatically retry a failed review.
+
+Local validation on 2026-09-07 passed clean installation, all **89 Node tests**,
+**9 deployment tests**, smoke/synthetic health, actionlint, ShellCheck, shell and
+JavaScript syntax, YAML, JSON Schema, TOML schema, and Python parsing. Production
+audit reported zero high/critical findings (existing one low and one moderate).
+New tests cover pending CI without a completion deadline, failure before
+publication, base-retarget triggering, ignored edit isolation, and preservation
+of the native required check name. The earlier live integration evidence above
+predates this follow-up; it does not claim a live retarget or slow-CI experiment.
+
+After this base-controlled workflow reaches main, validate a harmless eligible PR
+with CI still pending when review completes: native squash auto-merge should be
+enabled, custom checks should pass on HEAD, and GitHub should retain the CI hold.
+Also retarget a harmless PR onto main and confirm both workflows start; a later
+title/body edit must start no jobs, cancel no active run, and create no second
+required `checks` context. Neither check requires changing branch protection.
