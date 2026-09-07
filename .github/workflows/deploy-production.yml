@@ -1,0 +1,94 @@
+name: Deploy production
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: dextech-production
+  cancel-in-progress: false
+
+jobs:
+  checks:
+    if: github.repository == 'dexsword/dextech' && github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out exact workflow commit
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Require current main
+        env:
+          EXPECTED_SHA: ${{ github.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$EXPECTED_SHA" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$(git rev-parse HEAD)" == "$EXPECTED_SHA" ]]
+          remote_sha=$(git ls-remote https://github.com/dexsword/dextech.git refs/heads/main | cut -f1)
+          [[ "$remote_sha" == "$EXPECTED_SHA" ]]
+      - name: Set up Node 22
+        uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6.3.0
+        with:
+          node-version: '22'
+      - name: Clean install, complete tests and CI checks
+        shell: bash
+        run: bash scripts/deployment-checks.sh
+      - name: Require zero high or critical production vulnerabilities
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm audit --omit=dev --audit-level=high --json > "$RUNNER_TEMP/audit.json"
+          node -e 'const a=require(process.argv[1]); const v=a.metadata?.vulnerabilities; if(!v || v.high !== 0 || v.critical !== 0) process.exit(1)' "$RUNNER_TEMP/audit.json"
+
+  deploy:
+    needs: checks
+    if: github.repository == 'dexsword/dextech' && github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: production
+    steps:
+      # Fresh runner: no checkout, npm scripts, cache or artifacts receive secrets.
+      - name: Deploy exact checked main commit with OpenSSH
+        env:
+          EXPECTED_SHA: ${{ github.sha }}
+          DEPLOY_HOST: ${{ vars.DEXSERVE_HOST }}
+          DEPLOY_PORT: ${{ vars.DEXSERVE_PORT }}
+          DEPLOY_USER: ${{ vars.DEXSERVE_DEPLOY_USER }}
+          DEPLOY_KEY: ${{ secrets.DEXSERVE_SSH_PRIVATE_KEY }}
+          KNOWN_HOSTS: ${{ secrets.DEXSERVE_KNOWN_HOSTS }}
+        shell: bash
+        run: |
+          set +x
+          set -euo pipefail
+          umask 077
+          fail() { echo 'Deployment transport failed; details suppressed.'; exit 1; }
+          [[ "$EXPECTED_SHA" =~ ^[0-9a-f]{40}$ ]] || fail
+          [[ "$DEPLOY_HOST" =~ ^[A-Za-z0-9][A-Za-z0-9.-]*$ ]] || fail
+          [[ "$DEPLOY_PORT" =~ ^[0-9]{1,5}$ ]] || fail
+          (( 10#$DEPLOY_PORT > 0 && 10#$DEPLOY_PORT <= 65535 )) || fail
+          [[ "$DEPLOY_USER" == dextech-deploy ]] || fail
+          [[ -n "$DEPLOY_KEY" && -n "$KNOWN_HOSTS" ]] || fail
+          remote_sha=$(git ls-remote https://github.com/dexsword/dextech.git refs/heads/main 2>/dev/null | cut -f1) || fail
+          [[ "$remote_sha" == "$EXPECTED_SHA" ]] || fail
+          ssh_dir=$(mktemp -d "$RUNNER_TEMP/dextech-ssh.XXXXXX")
+          trap 'rm -rf -- "$ssh_dir"' EXIT
+          trap 'exit 130' INT
+          trap 'exit 143' TERM
+          printf '%s\n' "$DEPLOY_KEY" > "$ssh_dir/key"
+          printf '%s\n' "$KNOWN_HOSTS" > "$ssh_dir/known_hosts"
+          unset DEPLOY_KEY KNOWN_HOSTS
+          ssh-keygen -y -P '' -f "$ssh_dir/key" >/dev/null 2>&1 || fail
+          ssh -F /dev/null -T -i "$ssh_dir/key" -p "$DEPLOY_PORT" \
+            -o BatchMode=yes -o IdentitiesOnly=yes -o IdentityAgent=none \
+            -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$ssh_dir/known_hosts" \
+            -o GlobalKnownHostsFile=/dev/null -o HostKeyAlgorithms=ssh-ed25519 \
+            -o PasswordAuthentication=no -o KbdInteractiveAuthentication=no \
+            -o ForwardAgent=no -o ClearAllForwardings=yes -o RequestTTY=no \
+            -o ConnectTimeout=15 -o ServerAliveInterval=15 -o ServerAliveCountMax=3 \
+            "$DEPLOY_USER@$DEPLOY_HOST" "deploy $EXPECTED_SHA" >/dev/null 2>&1 || fail
+          echo 'Deployment and server acceptance gates passed.'
