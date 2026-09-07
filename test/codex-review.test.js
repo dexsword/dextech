@@ -8,17 +8,24 @@ const { execFileSync } = require('node:child_process');
 const p = require('../.github/codex/policy.cjs');
 const c = require('../.github/codex/control.cjs');
 const schema = require('../.github/codex/review.schema.json');
-const base = 'a'.repeat(40), head = 'b'.repeat(40);
-const expected = { number: 12, base, head };
-const pr = () => ({ number: 12, node_id: 'PR_fixture', state: 'open', draft: false,
+const base = 'a'.repeat(40), head = 'b'.repeat(40), merge = 'e'.repeat(40);
+const expected = { number: 12, base, head, merge };
+const pr = () => ({ number: 12, node_id: 'PR_fixture', state: 'open', draft: false, mergeable: true, merge_commit_sha: merge,
   base: { repo: { full_name: 'dexsword/dextech' }, ref: 'main', sha: base },
   head: { repo: { full_name: 'dexsword/dextech' }, sha: head } });
 const clean = () => ({ verdict: 'pass', confidence: 0.97, blocking_findings: [], summary: 'Correct patch.' });
-const env = () => ({ HEAD_SHA: head, BASE_SHA: base, PR_NUMBER: '12', GITHUB_RUN_ID: '123',
+const env = () => ({ HEAD_SHA: head, BASE_SHA: base, MERGE_SHA: merge, PR_NUMBER: '12', GITHUB_RUN_ID: '123',
   GITHUB_RUN_ATTEMPT: '1', GATE_ID: '101', ELIGIBLE_ID: '102', ELIGIBLE: 'true',
   AUTO_MERGE_RESULT: 'skipped', DISARM_RESULT: 'success', ELIGIBILITY_RESULT: 'success', REVIEW_RESULT: 'success', REVIEW_JSON: JSON.stringify(clean()) });
-const check = kind => ({ name: p.CHECKS[kind], head_sha: head, external_id: `123:1:${head}`,
+const check = kind => ({ name: p.CHECKS[kind], head_sha: merge, external_id: `123:1:${head}:${merge}:${base}`,
   app: { slug: 'github-actions' }, status: 'in_progress', conclusion: null });
+
+function mergeResponse(endpoint) {
+  if (endpoint.endsWith('/git/ref/heads/main')) return { object: { sha: base } };
+  if (endpoint.endsWith('/git/ref/pull/12/merge')) return { ref: 'refs/pull/12/merge', object: { type: 'commit', sha: merge } };
+  if (endpoint.endsWith(`/git/commits/${merge}`)) return { sha: merge, parents: [{ sha: base }, { sha: head }] };
+  return null;
+}
 
 function mockAPI(current = pr(), transform = value => value) {
   const calls = [];
@@ -26,7 +33,7 @@ function mockAPI(current = pr(), transform = value => value) {
     calls.push({ endpoint, method, body });
     if (endpoint.endsWith('/check-runs/101')) return transform(check('gate'));
     if (endpoint.endsWith('/check-runs/102')) return transform(check('eligible'));
-    if (endpoint.endsWith('/git/ref/heads/main')) return { object: { sha: base } };
+    if (mergeResponse(endpoint)) return mergeResponse(endpoint);
     if (endpoint.endsWith('/pulls/12')) return current;
     if (endpoint === '/graphql') {
       current.auto_merge = { merge_method: 'squash' };
@@ -196,7 +203,7 @@ test('publisher fails closed on review timeout but ineligibility alone stays neu
     const writes = [];
     const api = async (endpoint, method, body) => {
       if (method === 'PATCH') { writes.push(body); return {}; }
-      if (endpoint.endsWith('/git/ref/heads/main')) return { object: { sha: base } };
+      if (mergeResponse(endpoint)) return mergeResponse(endpoint);
       if (endpoint.endsWith('/pulls/12')) return pr();
       return check(endpoint.endsWith('101') ? 'gate' : 'eligible');
     };
@@ -382,7 +389,7 @@ test('failed revocation prevents a clean high-confidence review from passing', a
   const writes = [];
   const api = async (endpoint, method, body) => {
     if (method === 'PATCH') { writes.push(body); return {}; }
-    if (endpoint.endsWith('/git/ref/heads/main')) return { object: { sha: base } };
+    if (mergeResponse(endpoint)) return mergeResponse(endpoint);
       if (endpoint.endsWith('/pulls/12')) return pr();
       return check(endpoint.endsWith('101') ? 'gate' : 'eligible');
   };
@@ -392,7 +399,7 @@ test('failed revocation prevents a clean high-confidence review from passing', a
   assert.equal(writes[0].conclusion, 'failure');
 });
 
-test('snapshot creates pending required checks on the PR head, with trusted run binding', async t => {
+test('snapshot creates pending checks on the synthetic merge SHA, binding the reviewed head', async t => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'dextech-review-snapshot-'));
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
   fs.writeFileSync(path.join(dir, 'event.json'), JSON.stringify({ pull_request: pr() }));
@@ -402,10 +409,11 @@ test('snapshot creates pending required checks on the PR head, with trusted run 
     GITHUB_REPOSITORY: 'dexsword/dextech', GITHUB_EVENT_NAME: 'pull_request_target' },
   async (endpoint, method, body) => {
     if (method === 'POST') { writes.push(body); return { id: 100 + writes.length }; }
+    if (mergeResponse(endpoint)) return mergeResponse(endpoint);
     assert.equal(endpoint, '/repos/dexsword/dextech/pulls/12'); return pr();
   });
   assert.deepEqual(writes.map(x => x.name), [p.CHECKS.gate, p.CHECKS.eligible]);
-  assert.ok(writes.every(x => x.head_sha === head && x.status === 'in_progress' && x.external_id === `123:1:${head}`));
+  assert.ok(writes.every(x => x.head_sha === merge && x.status === 'in_progress' && x.external_id === `123:1:${head}:${merge}:${base}`));
   assert.match(fs.readFileSync(path.join(dir, 'output'), 'utf8'), new RegExp(`head=${head}`));
 });
 
@@ -573,6 +581,7 @@ function orderAPI({ existing, rejectRequest = false, badMutation = false, unconf
       }
     }
     if (endpoint.endsWith('/git/ref/heads/main')) return { object: { sha: changedMain ? 'c'.repeat(40) : base } };
+    if (mergeResponse(endpoint)) return mergeResponse(endpoint);
     if (endpoint.endsWith('/pulls/12')) return structuredClone(current);
     if (endpoint === '/graphql') {
       assert.ok(Object.values(checks).every(x => x.status === 'in_progress' && x.conclusion === null));
@@ -591,7 +600,7 @@ function publicationEnv(t, confirmation = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'dextech-order-publish-'));
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
   return { ...env(), GITHUB_OUTPUT: path.join(dir, 'output'), AUTO_MERGE_RESULT: 'success',
-    CONFIRMED_HEAD: confirmation.confirmed_head, CONFIRMED_BASE: confirmation.confirmed_base,
+    CONFIRMED_HEAD: confirmation.confirmed_head, CONFIRMED_BASE: confirmation.confirmed_base, CONFIRMED_MERGE: confirmation.confirmed_merge,
     CONFIRMED_RUN: confirmation.confirmed_run };
 }
 
@@ -599,7 +608,7 @@ test('request and read-back confirmation precede both successful required checks
   const mock = orderAPI();
   const confirmation = await c.requestAutoMerge(env(), mock.api);
   assert.ok(Object.values(mock.checks).every(x => x.status === 'in_progress'));
-  assert.deepEqual(confirmation, { confirmed_head: head, confirmed_base: base, confirmed_run: `123:1:${head}` });
+  assert.deepEqual(confirmation, { confirmed_head: head, confirmed_base: base, confirmed_merge: merge, confirmed_run: `123:1:${head}:${merge}:${base}` });
   await c.publish(publicationEnv(t, confirmation), mock.api);
   assert.ok(Object.values(mock.checks).every(x => x.status === 'completed' && x.conclusion === 'success'));
   const enableIndex = mock.calls.findIndex(x => x.endpoint === '/graphql');
@@ -620,7 +629,7 @@ test('failed request, missing mutation confirmation or missing read-back never p
 });
 
 test('publisher rejects absent, stale or unsuccessful confirmation even if native squash is enabled', async t => {
-  for (const override of [{ CONFIRMED_HEAD: base }, { CONFIRMED_BASE: head },
+  for (const override of [{ CONFIRMED_HEAD: base }, { CONFIRMED_BASE: head }, { CONFIRMED_MERGE: head },
     { CONFIRMED_RUN: `123:0:${head}` }, { AUTO_MERGE_RESULT: 'cancelled' }, { AUTO_MERGE_RESULT: 'skipped' }]) {
     const mock = orderAPI();
     const confirmed = await c.requestAutoMerge(env(), mock.api);
@@ -731,10 +740,135 @@ test('workflow orders disarming, evaluation, native request, then publication wi
   assert.match(job('publish'), /needs: \[snapshot, eligibility, review, disarm, auto-merge\]/);
   assert.match(job('publish'), /contents: read\n      checks: write/);
   assert.doesNotMatch(job('publish'), /pull-requests: write|contents: write/);
-  for (const field of ['confirmed_head', 'confirmed_base', 'confirmed_run']) {
+  for (const field of ['confirmed_head', 'confirmed_base', 'confirmed_merge', 'confirmed_run']) {
     assert.ok(job('publish').includes(`needs.auto-merge.outputs.${field}`));
   }
   const source = fs.readFileSync(path.join(__dirname, '../.github/codex/control.cjs'), 'utf8');
   assert.doesNotMatch(source, /\bmergePullRequest\b|\/pulls\/[^\n]*\/merge|--admin/);
   assert.equal(p.classify(['.github/workflows/codex-review.yml', '.github/codex/control.cjs']).eligible, false);
+});
+
+test('merge-bound checks still request auto-merge with the reviewed source head', async t => {
+  const mock = orderAPI();
+  assert.notEqual(head, merge);
+  const confirmation = await c.requestAutoMerge(env(), mock.api);
+  const mutation = mock.calls.find(x => x.endpoint === '/graphql');
+  assert.equal(mutation.body.variables.head, head);
+  assert.notEqual(mutation.body.variables.head, merge);
+  assert.equal(confirmation.confirmed_merge, merge);
+  await c.publish(publicationEnv(t, confirmation), mock.api);
+  for (const value of Object.values(mock.checks)) {
+    assert.equal(value.head_sha, merge);
+    assert.equal(value.external_id, `123:1:${head}:${merge}:${base}`);
+    assert.match(value.output.summary, new RegExp(`Reviewed head: ${head}. Merge candidate: ${merge}`));
+  }
+});
+
+test('a changed merge ref, unknown mergeability, or mismatched parents stops auto-merge before mutation', async () => {
+  const cases = [
+    (url, value) => url.includes('/git/ref/pull/') ? { ...value, object: { type: 'commit', sha: 'f'.repeat(40) } } : value,
+    (url, value) => url.includes('/git/ref/pull/') ? { ...value, ref: 'refs/heads/main' } : value,
+    (url, value) => url.includes('/git/commits/') ? { ...value, parents: [{ sha: base }, { sha: base }] } : value,
+    (url, value) => url.includes('/git/commits/') ? { ...value, parents: [{ sha: head }, { sha: base }] } : value,
+    (url, value) => url.includes('/git/commits/') ? { ...value, parents: [] } : value,
+    (url, value) => url.endsWith('/pulls/12') ? { ...value, merge_commit_sha: null } : value,
+    (url, value) => url.endsWith('/pulls/12') ? { ...value, merge_commit_sha: 'f'.repeat(40) } : value,
+    (url, value) => url.endsWith('/pulls/12') ? { ...value, mergeable: null } : value,
+    (url, value) => url.endsWith('/pulls/12') ? { ...value, mergeable: false } : value
+  ];
+  for (const transform of cases) {
+    const mock = orderAPI();
+    await assert.rejects(c.requestAutoMerge(env(), async (url, ...args) => transform(url, await mock.api(url, ...args))),
+      error => c.diagnostic(error).includes('stale-or-unavailable-merge-candidate'));
+    assert.equal(mock.calls.some(x => x.method !== 'GET'), false);
+  }
+});
+
+test('missing merge SHA and old head-only checks cannot authorize a request', async () => {
+  for (const value of [undefined, '', 'invalid', merge.toUpperCase()]) {
+    const mock = orderAPI();
+    await assert.rejects(c.requestAutoMerge({ ...env(), MERGE_SHA: value }, mock.api));
+    assert.equal(mock.calls.length, 0);
+  }
+  for (const transform of [x => ({ ...x, head_sha: head }),
+    x => ({ ...x, external_id: `123:1:${head}` }),
+    x => ({ ...x, external_id: `123:1:${head}:${head}:${base}` })]) {
+    const mock = mockAPI(pr(), transform);
+    await assert.rejects(c.requestAutoMerge(env(), mock.api));
+    assert.equal(mock.calls.some(x => x.method !== 'GET'), false);
+  }
+});
+
+test('merge-candidate change during request confirmation leaves both checks pending', async () => {
+  const mock = orderAPI();
+  let requested = false;
+  await assert.rejects(c.requestAutoMerge(env(), async (url, ...args) => {
+    const result = await mock.api(url, ...args);
+    if (url === '/graphql') requested = true;
+    if (requested && url.includes('/git/ref/pull/')) result.object.sha = 'f'.repeat(40);
+    return result;
+  }));
+  assert.ok(Object.values(mock.checks).every(x => x.status === 'in_progress'));
+  assert.equal(mock.calls.some(x => x.method === 'PATCH'), false);
+});
+
+test('publication revalidates both SHAs before each check update', async t => {
+  for (const when of ['before-publication', 'between-writes']) {
+    const mock = orderAPI();
+    const confirmation = await c.requestAutoMerge(env(), mock.api);
+    let writes = 0;
+    await assert.rejects(c.publish(publicationEnv(t, confirmation), async (url, method, body) => {
+      const result = await mock.api(url, method, body);
+      if (method === 'PATCH') writes++;
+      if (url.includes('/git/ref/pull/') && (when === 'before-publication' || writes === 1)) {
+        result.object.sha = 'f'.repeat(40);
+      }
+      return result;
+    }));
+    assert.equal(writes, when === 'before-publication' ? 0 : 1);
+    assert.equal(mock.checks.eligible.status, 'in_progress');
+  }
+  const mock = orderAPI();
+  const confirmation = await c.requestAutoMerge(env(), mock.api);
+  await assert.rejects(c.publish(publicationEnv(t, confirmation), async (url, ...args) => {
+    const result = await mock.api(url, ...args);
+    if (url.endsWith('/pulls/12')) result.head.sha = 'f'.repeat(40);
+    return result;
+  }));
+  assert.equal(mock.calls.some(x => x.method === 'PATCH'), false);
+});
+
+test('snapshot uses the live synthetic merge SHA and never falls back to the event head', async t => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'dextech-merge-snapshot-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  fs.writeFileSync(path.join(dir, 'event.json'), JSON.stringify({ pull_request: { ...pr(), merge_commit_sha: head } }));
+  const values = { ...env(), GITHUB_EVENT_PATH: path.join(dir, 'event.json'),
+    GITHUB_OUTPUT: path.join(dir, 'output'), GITHUB_SHA: base,
+    GITHUB_REPOSITORY: 'dexsword/dextech', GITHUB_EVENT_NAME: 'pull_request_target' };
+  const writes = [];
+  await c.snapshot(values, async (url, method, body) => {
+    if (method === 'POST') { writes.push(body); return { id: 100 + writes.length }; }
+    return mergeResponse(url) || pr();
+  });
+  assert.ok(writes.every(x => x.head_sha === merge && x.head_sha !== head));
+  assert.match(fs.readFileSync(values.GITHUB_OUTPUT, 'utf8'), new RegExp(`merge=${merge}`));
+  for (const invalid of [{ merge_commit_sha: null }, { mergeable: null }, { mergeable: false }]) {
+    await assert.rejects(c.snapshot(values, async (url, method) => {
+      assert.notEqual(method, 'POST');
+      return { ...pr(), ...invalid };
+    }));
+  }
+});
+
+test('workflow carries the merge SHA and confirmation without changing exact-head checkout or permissions', () => {
+  const workflow = fs.readFileSync(path.join(__dirname, '../.github/workflows/codex-review.yml'), 'utf8');
+  assert.match(workflow, /merge: \$\{\{ steps.snapshot.outputs.merge \}\}/);
+  const heads = [...workflow.matchAll(/HEAD_SHA: \$\{\{ needs.snapshot.outputs.head \}\}/g)];
+  const merges = [...workflow.matchAll(/MERGE_SHA: \$\{\{ needs.snapshot.outputs.merge \}\}/g)];
+  assert.equal(merges.length, heads.length);
+  assert.equal(merges.length, 6);
+  assert.match(workflow, /CONFIRMED_MERGE: \$\{\{ needs.auto-merge.outputs.confirmed_merge \}\}/);
+  assert.match(workflow, /confirmed_merge: \$\{\{ steps.request.outputs.confirmed_merge \}\}/);
+  assert.doesNotMatch(workflow, /ref: \$\{\{ needs.snapshot.outputs.merge \}\}/);
+  assert.equal(p.classify(['.github/codex/control.cjs', '.github/workflows/codex-review.yml']).eligible, false);
 });

@@ -28,6 +28,7 @@ jobs:
       checks: write
     outputs:
       head: ${{ steps.snapshot.outputs.head }}
+      merge: ${{ steps.snapshot.outputs.merge }}
       base: ${{ steps.snapshot.outputs.base }}
       number: ${{ steps.snapshot.outputs.number }}
       gate_id: ${{ steps.snapshot.outputs.gate_id }}
@@ -39,7 +40,7 @@ jobs:
           persist-credentials: false
           path: control
       - id: snapshot
-        name: Bind pending PR-head checks to this trusted run
+        name: Bind pending merge-candidate checks to this trusted run
         env:
           GH_TOKEN: ${{ github.token }}
         run: node control/.github/codex/control.cjs snapshot
@@ -54,6 +55,7 @@ jobs:
       eligible: ${{ steps.classify.outputs.eligible }}
     env:
       HEAD_SHA: ${{ needs.snapshot.outputs.head }}
+      MERGE_SHA: ${{ needs.snapshot.outputs.merge }}
       BASE_SHA: ${{ needs.snapshot.outputs.base }}
       PR_NUMBER: ${{ needs.snapshot.outputs.number }}
     steps:
@@ -82,6 +84,7 @@ jobs:
       result: ${{ steps.codex.outputs.final-message }}
     env:
       HEAD_SHA: ${{ needs.snapshot.outputs.head }}
+      MERGE_SHA: ${{ needs.snapshot.outputs.merge }}
       BASE_SHA: ${{ needs.snapshot.outputs.base }}
       PR_NUMBER: ${{ needs.snapshot.outputs.number }}
     steps:
@@ -135,6 +138,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           HEAD_SHA: ${{ needs.snapshot.outputs.head }}
+          MERGE_SHA: ${{ needs.snapshot.outputs.merge }}
           BASE_SHA: ${{ needs.snapshot.outputs.base }}
           PR_NUMBER: ${{ needs.snapshot.outputs.number }}
         run: node control/.github/codex/control.cjs disarm
@@ -157,10 +161,11 @@ jobs:
           persist-credentials: false
           path: control
       - id: publish
-        name: Validate schema and publish exact-head checks
+        name: Validate schema and publish merge-candidate checks
         env:
           GH_TOKEN: ${{ github.token }}
           HEAD_SHA: ${{ needs.snapshot.outputs.head }}
+          MERGE_SHA: ${{ needs.snapshot.outputs.merge }}
           BASE_SHA: ${{ needs.snapshot.outputs.base }}
           PR_NUMBER: ${{ needs.snapshot.outputs.number }}
           GATE_ID: ${{ needs.snapshot.outputs.gate_id }}
@@ -173,6 +178,7 @@ jobs:
           PR_DRAFT: ${{ github.event.pull_request.draft }}
           AUTO_MERGE_RESULT: ${{ needs.auto-merge.result }}
           CONFIRMED_HEAD: ${{ needs.auto-merge.outputs.confirmed_head }}
+          CONFIRMED_MERGE: ${{ needs.auto-merge.outputs.confirmed_merge }}
           CONFIRMED_BASE: ${{ needs.auto-merge.outputs.confirmed_base }}
           CONFIRMED_RUN: ${{ needs.auto-merge.outputs.confirmed_run }}
         run: node control/.github/codex/control.cjs publish
@@ -195,6 +201,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           HEAD_SHA: ${{ needs.snapshot.outputs.head }}
+          MERGE_SHA: ${{ needs.snapshot.outputs.merge }}
           BASE_SHA: ${{ needs.snapshot.outputs.base }}
           PR_NUMBER: ${{ needs.snapshot.outputs.number }}
           REVIEW_JSON: ${{ needs.review.outputs.result }}
@@ -217,6 +224,7 @@ jobs:
       checks: read
     outputs:
       confirmed_head: ${{ steps.request.outputs.confirmed_head }}
+      confirmed_merge: ${{ steps.request.outputs.confirmed_merge }}
       confirmed_base: ${{ steps.request.outputs.confirmed_base }}
       confirmed_run: ${{ steps.request.outputs.confirmed_run }}
     steps:
@@ -230,6 +238,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           HEAD_SHA: ${{ needs.snapshot.outputs.head }}
+          MERGE_SHA: ${{ needs.snapshot.outputs.merge }}
           BASE_SHA: ${{ needs.snapshot.outputs.base }}
           PR_NUMBER: ${{ needs.snapshot.outputs.number }}
           GATE_ID: ${{ needs.snapshot.outputs.gate_id }}

@@ -35,7 +35,9 @@ GitHub settings or secrets. This implementation PR itself is ineligible.
 
    Keep other existing requirements. Do not require `deploy` (a post-merge job),
    `auto-merge`, or every job in the target workflow. The two explicitly named
-   checks are created **on the PR head SHA**, not the base SHA of the target run.
+   checks are created **on GitHub’s synthetic PR merge SHA**, alongside `CI / checks`.
+   The reviewed source head remains separately bound; the target workflow’s base
+   SHA is never used as the check destination.
    GitHub accepts a neutral required check for manual merging. The requester
    additionally demands actual eligibility `true` and a **success** conclusion.
 5. Enable repository **Allow squash merging** and **Allow auto-merge**. Confirm
@@ -86,7 +88,9 @@ on DexServe or another persistent/self-hosted production runner.
 Separate fresh jobs create/publish checks (`contents: read`, `checks: write`).
 The order is deliberately:
 
-1. `snapshot` creates both custom PR-head checks **in progress**.
+1. `snapshot` captures the reviewed `HEAD_SHA`, trusted `BASE_SHA`, and current
+   synthetic `MERGE_SHA`, verifies the merge ref/parents, and creates both custom
+   checks **in progress on `MERGE_SHA`**.
 2. `disarm` revokes any earlier native request before `eligibility` and `review`
    evaluate the captured candidate. It has `contents: write`, `pull-requests: write`
    solely to disable stale requests. Failure blocks evaluation/publication.
@@ -95,17 +99,20 @@ The order is deliberately:
 4. For eligible non-draft PRs, `auto-merge` validates the structured review again
    (confidence >= 0.95, no blocking findings, successful review/disarming and
    eligibility). It checks both custom checks are still **in progress** with null
-   conclusions and this run's IDs/head/attempt binding, then rereads current main
-   and the open, non-draft, same-repository PR immediately before the mutation.
+   conclusions and this run's IDs/head/merge/base/attempt binding, then revalidates
+   current main, GitHub's merge ref and parents, and the open, non-draft,
+   same-repository PR immediately before the mutation.
 5. While the checks remain pending, it requests `enablePullRequestAutoMerge` with
    `expectedHeadOid` and `mergeMethod: SQUASH`. It validates the mutation response's
-   PR ID, head and method, then independently reads back current main and PR to
-   confirm native squash auto-merge is enabled. An already-enabled matching squash
+   PR ID, source head and method, then independently reads back current main,
+   merge ref/parents and PR to confirm the same merge candidate is still current
+   and native squash auto-merge is enabled. An already-enabled matching squash
    request uses the same checks/read-back without another mutation; another method
    or a stale candidate fails closed.
-6. Only after the request job succeeds does `publish` validate its head/base/run
-   confirmation, reread live PR/main and the enabled squash request, independently
-   validate the review, and complete `Codex Review / gate` and
+6. Only after the request job succeeds does `publish` validate its head/merge/base/run
+   confirmation, reread live PR/main/merge and the enabled squash request, validate
+   the review, and revalidate both source and merge SHAs immediately
+   before each check update. It completes `Codex Review / gate` and
    `Auto Merge / eligible` successfully. GitHub can then observe the completed
    requirements and merge when every configured protection/approval permits it.
 
@@ -120,11 +127,11 @@ it on a PR that is already immediately mergeable. No immediate merge fallback ex
 Failure to request or confirm auto-merge leaves both authorization checks pending
 or failed, never successful. Cancellation or failure before publication leaves
 pending checks; rerun the complete trusted workflow to recover. Confirmation is
-bound to the workflow run/attempt, captured head and base, never just a boolean.
+bound to the workflow run/attempt, captured head, merge and base, never just a boolean.
 If publication is interrupted after one check succeeds, the other remains pending
 and still blocks merging. GitHub offers no transaction across the two check writes.
 Strict up-to-date protection remains required: the head precondition is atomic,
-but reading main and publishing checks are separate API operations.
+but reading main/the merge candidate and publishing checks are separate API operations.
 
 Ineligible changes skip the request job: a valid review gets a successful gate and
 **neutral** eligibility for manual review. Drafts also skip requesting auto-merge;
@@ -134,11 +141,42 @@ request path. This hotfix changes protected control/workflow paths and is itself
 ineligible; it requires manual review and manual squash merge.
 
 Failures emit only fixed diagnostic categories: `permission-or-repository-setting-rejection`,
-`pr-already-immediately-mergeable`, `stale-head-or-base`, `draft-or-closed-pr`,
+`pr-already-immediately-mergeable`, `stale-head-or-base`, `stale-or-unavailable-merge-candidate`, `draft-or-closed-pr`,
 `auto-merge-unavailable`, `unexpected-github-response`, `invalid-review-or-eligibility`,
 or `required-checks-not-pending`. API status/known error patterns select these
 trusted strings; raw response bodies, exception text and model output are never
 included in diagnostics. Unknown failures use `unexpected-github-response`.
+
+
+## Source-head and merge-candidate bindings
+
+`HEAD_SHA` is the exact immutable source commit checked out with full history,
+classified and reviewed by Codex. `MERGE_SHA` is GitHub's current synthetic
+`refs/pull/<number>/merge` commit, captured from the live open PR's
+`merge_commit_sha` after `mergeable` is explicitly true. `BASE_SHA` remains the
+captured main commit controlling the workflow, policy and review instructions.
+
+GitHub can require all status checks on the synthetic merge candidate once CI
+reports there. Head-only custom checks do not satisfy those requirements, even
+with identical names and the GitHub Actions source. Both custom check runs now
+use `head_sha: MERGE_SHA` in the Checks API. Their external binding includes the
+run, attempt, source head, merge candidate and base. Check summaries display both
+reviewed head and merge SHA; metadata-only feedback comments still describe the
+source head reviewed by Codex.
+
+Snapshot capture, native request, request confirmation and final check publication
+verify the live merge ref and its two parents (captured base first, source head
+second), plus current PR head/base/merge metadata. Check IDs must point to that
+same merge SHA. The existing ancestry gate still requires base to be an ancestor
+of the reviewed source head. No synthetic-merge scripts are executed: candidate
+checkout stays on `HEAD_SHA`, and `expectedHeadOid` still uses `HEAD_SHA`.
+
+Missing/unknown mergeability, an absent merge ref, inconsistent parents, or any
+head/base/merge change fails closed. Never substitute the source head for a missing
+merge candidate, reuse an old merge receipt, or silently recapture a different
+candidate mid-run. Start a fresh trusted run once GitHub has a valid candidate.
+GitHub has no atomic merge-candidate precondition on enable-auto-merge/check writes;
+the immediate revalidation and required up-to-date ruleset remain authoritative.
 
 ## Review decision and eligibility
 
@@ -262,7 +300,7 @@ runners. Production, SSH, Tailscale and Calendar credentials are never supplied.
 1. Keep required independent human approval outstanding so no test PR can merge.
    Configure the key and protected checks, then open a same-repository **draft**
    PR with a harmless `README.md` edit on current main. Confirm normal CI and
-   audit run, the exact-head Codex check passes, eligibility succeeds, and no
+   audit run, the source-head-bound Codex check passes on the synthetic merge SHA, eligibility succeeds, and no
    auto-merge request exists. Inspect only sanitized output and check metadata.
 2. Mark it ready while leaving the required approval outstanding. Confirm native
    squash auto-merge becomes enabled but GitHub waits for the missing approval/CI.
@@ -297,7 +335,14 @@ References: [official Codex Action documentation](https://developers.openai.com/
 [required status checks](https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/managing-protected-branches/about-protected-branches#require-status-checks-before-merging).
 
 
-## After manually installing the request-order hotfix
+## After manually installing the merge-candidate binding hotfix
+
+The hotfix PR itself runs the previous base-controlled workflow. Its local/CI
+regression tests validate the new implementation, but its target run cannot use
+this new check placement before installation. The existing head-only check bug
+may therefore leave required merge-candidate checks waiting on the hotfix PR too.
+Any maintainer bootstrap procedure is separate from this change; this implementation
+does not alter protection or manufacture successful checks to install itself.
 
 1. Manually review and squash merge the hotfix PR, preserving branch protection.
    This is an ineligible control change. A human merge to main follows the existing
@@ -307,6 +352,8 @@ References: [official Codex Action documentation](https://developers.openai.com/
    `synchronize` run using the corrected base workflow. A rerun of an old workflow
    run is not a substitute for bringing the branch up to the new base.
 3. Observe `snapshot` → `disarm` → `eligibility`/`review` → `auto-merge` → `publish`.
+   Verify `CI / checks` and both custom checks report the same `MERGE_SHA`,
+   while the reviewed source commit and `expectedHeadOid` remain `HEAD_SHA`.
    During request/confirmation both custom checks must remain pending. Confirm
    native squash auto-merge is enabled before they turn successful. Existing CI
    and all required approvals remain authoritative; do not manually enable an

@@ -12,6 +12,7 @@ const DIAGNOSTICS = Object.freeze({
   permission: 'permission-or-repository-setting-rejection',
   mergeable: 'pr-already-immediately-mergeable',
   stale: 'stale-head-or-base',
+  merge: 'stale-or-unavailable-merge-candidate',
   inactive: 'draft-or-closed-pr',
   unavailable: 'auto-merge-unavailable',
   unexpected: 'unexpected-github-response',
@@ -39,8 +40,8 @@ function apiFailure(errors) {
 }
 
 function expected(env) {
-  if (!sha(env.HEAD_SHA) || !sha(env.BASE_SHA) || !/^[1-9][0-9]*$/.test(env.PR_NUMBER)) fail();
-  return { head: env.HEAD_SHA, base: env.BASE_SHA, number: Number(env.PR_NUMBER) };
+  if (!sha(env.HEAD_SHA) || !sha(env.BASE_SHA) || !sha(env.MERGE_SHA) || !/^[1-9][0-9]*$/.test(env.PR_NUMBER)) fail();
+  return { head: env.HEAD_SHA, base: env.BASE_SHA, merge: env.MERGE_SHA, number: Number(env.PR_NUMBER) };
 }
 
 function output(env, values) {
@@ -64,7 +65,7 @@ function client(env, fetcher = fetch) {
     });
     // Never log response bodies, exception text, headers or credential values.
     if ([401, 403].includes(response.status)) fail('permission');
-    if (response.status === 404) fail('unavailable');
+    if (response.status === 404) fail(endpoint.includes('/git/ref/pull/') || endpoint.includes('/git/commits/') ? 'merge' : 'unavailable');
     const result = await response.json();
     if (result?.errors) apiFailure(result.errors);
     if (!response.ok || !result || typeof result !== 'object') fail();
@@ -72,9 +73,9 @@ function client(env, fetcher = fetch) {
   };
 }
 
-function binding(env, head) {
-  if (!/^\d+$/.test(env.GITHUB_RUN_ID) || !/^\d+$/.test(env.GITHUB_RUN_ATTEMPT) || !sha(head)) fail();
-  return `${env.GITHUB_RUN_ID}:${env.GITHUB_RUN_ATTEMPT}:${head}`;
+function binding(env, match) {
+  if (!/^\d+$/.test(env.GITHUB_RUN_ID) || !/^\d+$/.test(env.GITHUB_RUN_ATTEMPT) || !sha(match.head) || !sha(match.base) || !sha(match.merge)) fail();
+  return `${env.GITHUB_RUN_ID}:${env.GITHUB_RUN_ATTEMPT}:${match.head}:${match.merge}:${match.base}`;
 }
 
 async function snapshot(env, api) {
@@ -85,19 +86,22 @@ async function snapshot(env, api) {
       !Number.isSafeInteger(match.number) || !policy.sameCandidate(pr, match)) fail();
   const current = await api(`/repos/${REPOSITORY}/pulls/${match.number}`);
   if (!policy.sameCandidate(current, match)) fail();
+  if (current.mergeable !== true || !sha(current.merge_commit_sha)) fail('merge');
+  match.merge = current.merge_commit_sha;
+  await currentCandidate(api, match);
   const ids = {};
   for (const kind of ['gate', 'eligible']) {
     const check = await api(`/repos/${REPOSITORY}/check-runs`, 'POST', {
-      name: CHECKS[kind], head_sha: match.head, status: 'in_progress',
-      external_id: binding(env, match.head),
+      name: CHECKS[kind], head_sha: match.merge, status: 'in_progress',
+      external_id: binding(env, match),
       details_url: `https://github.com/${REPOSITORY}/actions/runs/${env.GITHUB_RUN_ID}`,
-      output: { title: 'Trusted base policy is evaluating this exact head',
+      output: { title: 'Trusted base policy is evaluating this head and merge candidate',
         summary: 'Missing, failed, cancelled, or incomplete review cannot authorize auto-merge.' }
     });
     if (!Number.isSafeInteger(check.id)) fail();
     ids[`${kind}_id`] = check.id;
   }
-  output(env, { head: match.head, base: match.base, number: match.number, ...ids });
+  output(env, { head: match.head, base: match.base, merge: match.merge, number: match.number, ...ids });
 }
 
 function git(cwd, args) {
@@ -156,7 +160,7 @@ function prepare(cwd, match, env) {
   const agents = fs.readFileSync(path.join(root, 'AGENTS.md'), 'utf8');
   const rules = agents.split('## Code Review Rules\n')[1]?.split('\n## ')[0];
   if (!rules?.trim()) fail();
-  const data = { repository: REPOSITORY, base: match.base, head: match.head,
+  const data = { repository: REPOSITORY, base: match.base, head: match.head, merge: match.merge,
     changes: files.map(file => ({ file, before: readBlob(cwd, match.base, file), after: readBlob(cwd, match.head, file) })), context: [] };
   for (const file of ['server.js', 'script.js', 'index.html', 'package.json', 'test/server.test.js', 'test/ui.test.js']) {
     if (!files.includes(file)) data.context.push({ file, content: readBlob(cwd, match.head, file) });
@@ -184,17 +188,22 @@ async function publish(env, api) {
   const manual = env.AUTO_MERGE_RESULT === 'skipped' && classificationOK && (!eligible || (env.PR_DRAFT === 'true' && pr.draft === true));
   const confirmed = env.AUTO_MERGE_RESULT === 'success' &&
     env.CONFIRMED_HEAD === match.head && env.CONFIRMED_BASE === match.base &&
-    env.CONFIRMED_RUN === binding(env, match.head) && pr.draft === false &&
+    env.CONFIRMED_MERGE === match.merge &&
+    env.CONFIRMED_RUN === binding(env, match) && pr.draft === false &&
     pr.auto_merge?.merge_method === 'squash';
   const passed = reviewOK && classificationOK && (manual || confirmed);
   for (const kind of ['gate', 'eligible']) {
     const conclusion = kind === 'gate' ? (passed ? 'success' : 'failure') :
       (classificationOK && !eligible ? 'neutral' : (passed ? 'success' : 'failure'));
+    // Revalidate both bindings before EACH result, including between writes.
+    const live = await currentCandidate(api, match);
+    if (passed && !manual && (live.draft !== false || live.auto_merge?.merge_method !== 'squash')) fail('unavailable');
+    if (passed && manual && eligible && live.draft !== true) fail('inactive');
     await api(`/repos/${REPOSITORY}/check-runs/${ids[kind]}`, 'PATCH', {
       status: 'completed', conclusion,
       output: { title: kind === 'gate' ? (passed ? 'Review passed' : 'Review failed closed') :
         (eligible && passed ? 'Eligible for guarded auto-merge' : 'Manual review required'),
-      summary: `Exact head: ${match.head}. ` + (kind === 'gate' ?
+      summary: `Reviewed head: ${match.head}. Merge candidate: ${match.merge}. ` + (kind === 'gate' ?
         'Requires a valid passing review and, for eligible ready PRs, confirmed native squash auto-merge before successful checks.' :
         'Only the trusted base allowlist authorizes auto-merge. A neutral result is intentionally not a CI failure.') }
     });
@@ -281,8 +290,8 @@ async function pendingChecks(env, api, match) {
     const id = env[kind === 'gate' ? 'GATE_ID' : 'ELIGIBLE_ID'];
     if (!/^[1-9][0-9]*$/.test(id)) fail();
     const check = await api(`/repos/${REPOSITORY}/check-runs/${id}`);
-    if (check.name !== CHECKS[kind] || check.head_sha !== match.head ||
-        check.external_id !== binding(env, match.head) || check.app?.slug !== 'github-actions') fail('stale');
+    if (check.name !== CHECKS[kind] || check.head_sha !== match.merge ||
+        check.external_id !== binding(env, match) || check.app?.slug !== 'github-actions') fail('stale');
     if (check.status !== 'in_progress' || check.conclusion !== null) fail('pending');
     ids[kind] = id;
   }
@@ -292,9 +301,19 @@ async function pendingChecks(env, api, match) {
 async function currentCandidate(api, match, ready = false) {
   const main = await api(`/repos/${REPOSITORY}/git/ref/heads/main`);
   if (main.object?.sha !== match.base) fail('stale');
+  // GitHub owns this synthetic ref. Never fall back to the source head, a
+  // user-provided ref, or an old merge_commit_sha when mergeability is unknown.
+  const ref = await api(`/repos/${REPOSITORY}/git/ref/pull/${match.number}/merge`);
+  if (ref.ref !== `refs/pull/${match.number}/merge` || ref.object?.type !== 'commit' ||
+      ref.object.sha !== match.merge) fail('merge');
+  const commit = await api(`/repos/${REPOSITORY}/git/commits/${match.merge}`);
+  if (commit.sha !== match.merge || !Array.isArray(commit.parents) || commit.parents.length !== 2 ||
+      commit.parents[0]?.sha !== match.base || commit.parents[1]?.sha !== match.head) fail('merge');
+  // Final live read binds source head AND GitHub's current synthetic candidate.
   const pr = await api(`/repos/${REPOSITORY}/pulls/${match.number}`);
   if (pr.state !== 'open' || (ready && pr.draft !== false)) fail('inactive');
   if (!policy.sameCandidate(pr, match) || typeof pr.node_id !== 'string') fail('stale');
+  if (pr.mergeable !== true || pr.merge_commit_sha !== match.merge) fail('merge');
   return pr;
 }
 
@@ -320,7 +339,7 @@ async function requestAutoMerge(env, api) {
   // Require a fresh independent read-back, including the idempotent path.
   const confirmed = await currentCandidate(api, match, true);
   if (confirmed.node_id !== pr.node_id || confirmed.auto_merge?.merge_method !== 'squash') fail('unavailable');
-  return { confirmed_head: match.head, confirmed_base: match.base, confirmed_run: binding(env, match.head) };
+  return { confirmed_head: match.head, confirmed_base: match.base, confirmed_merge: match.merge, confirmed_run: binding(env, match) };
 }
 
 async function main(env) {
