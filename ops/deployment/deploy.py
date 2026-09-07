@@ -128,6 +128,11 @@ def switch(release, env_bytes):
         temp.unlink(missing_ok=True)
 
 
+def probe_public_html():
+    for path in ['/', '/support.html', '/admin', '/cancel']:
+        http('https://dextech.cloud' + path)
+
+
 def http(url, sha=None):
     req = urllib.request.Request(url, headers={'Cache-Control': 'no-cache',
                                               'User-Agent': 'DexTech-deployment-gate'})
@@ -197,8 +202,7 @@ def gates(sha, *, since, wait_refresh=True):
             and 'pid=' + str(pid) + ',' in sockets[0])
     require(str(DB) in [os.readlink(p) for p in Path('/proc/' + str(pid) + '/fd').iterdir()])
     http('https://dextech.cloud/health', sha)
-    for path in ['/', '/support.html', '/admin']:
-        http('https://dextech.cloud' + path)
+    probe_public_html()
     require(properties('apache2.service')['ActiveState'] == 'active')
     run(['apache2ctl', 'configtest'])
     calendar_read(RELEASES / sha)

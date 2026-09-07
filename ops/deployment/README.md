@@ -112,7 +112,8 @@ values or hashes in evidence. Only `release.env`'s SHA changes during deployment
 The root-owned release link changes atomically, and only `dextech.service` is
 restarted. Gates require systemd active/running, stable PID/no restarts, runtime
 UID and Node 22, release cwd/SHA, database FD, exclusive loopback listener,
-local/public health, HTML and availability, Apache active/configtest, Calendar
+local/public health, HTML (`/`, `/support.html`, `/admin`, `/cancel`) and
+availability, Apache active/configtest, Calendar
 FreeBusy/events read, a fresh application Calendar refresh, and sanitized logs
 from the current invocation and gate interval. No bookings, emails, payments,
 Calendar writes or admin mutations are used as probes. The two-minute Calendar
@@ -131,6 +132,60 @@ health and returns success: no build, backup, switch, restart or pruning occurs.
 A pre-existing *inactive* SHA directory fails closed and needs operator inspection;
 it is never silently reused or overwritten. Rollback compatibility of database
 schema changes must be reviewed before merging such application changes.
+
+## Apache `/cancel` proxy (operator-only)
+
+Live `GET https://dextech.cloud/cancel` must reach Express the same way `/admin`
+does. The app already serves `GET /cancel` with `Cache-Control: no-store`. The
+HTTPS vhost on DexServe must proxy `/cancel` to Node; GitHub Actions and
+`dextech-deploy` do **not** install, include or rewrite Apache vhost configuration.
+
+Exact destination: `/etc/apache2/sites-available/dextech.conf` (the HTTPS
+`<VirtualHost *:443>` enabled via `sites-enabled/dextech.conf`).
+
+Repo-owned snippet: `ops/deployment/apache-cancel-proxy.conf`. Paste those two
+lines into `dextech.conf` next to the existing `/admin` pair. Do **not**
+`Include` this snippet (or any other separate file) for `/cancel`:
+`protected_snapshot()` / `verify_protected()` only compare live
+`/etc/apache2/sites-available/dextech.conf`. A side file would not be covered.
+
+```
+ProxyPass /cancel http://localhost:3000/cancel
+ProxyPassReverse /cancel http://localhost:3000/cancel
+```
+
+Do not add Location blocks. Query strings are preserved by this ProxyPass form.
+
+As root, when no deploy is running:
+
+```sh
+# 1. Edit /etc/apache2/sites-available/dextech.conf and paste the two lines
+#    next to the /admin ProxyPass pair (inline in this file only).
+# 2. Syntax-check, then reload Apache without dropping the TLS vhost.
+apache2ctl configtest
+systemctl reload apache2
+# 3. Public verify: Express HTML, CSP, and no-store — not an Apache 404.
+curl -sI 'https://dextech.cloud/cancel'
+curl -sI 'https://dextech.cloud/cancel?id=test'
+```
+
+`apache2ctl configtest` must succeed before reload. Use `systemctl reload apache2`
+(the `apache2.service` unit already checked by the deployer).
+
+After the live conf is stable and public `/cancel` verifies, the next root
+`--validate` or normal `deploy` run re-baselines the in-memory protected snapshot.
+`protected_snapshot()` reads live bytes of `/etc/dextech/production.env`,
+`/etc/systemd/system/dextech.service`, and `/etc/apache2/sites-available/dextech.conf`
+(plus the running process's effective production environment keys) at the start of
+that run. `verify_protected()` compares the same live files later in the same run.
+There is no stored snapshot file and no separate refresh CLI. Editing the vhost
+during a run that already captured a snapshot will fail `verify_protected`.
+
+Merging these repository changes does **not** replace live `/usr/local/sbin/dextech-deploy`.
+Public HTML probes in `deploy.py` (`/`, `/support.html`, `/admin`, `/cancel`) take
+effect only after a separately reviewed root install of that file, using the table
+in Server controls. Install the updated deployer after the Apache proxy is live so
+`--validate` / deploy do not probe `/cancel` while Apache still 404s it.
 
 ## Validation without deployment
 
