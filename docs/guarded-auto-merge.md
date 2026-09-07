@@ -404,3 +404,42 @@ and PR18–21 evidence describes the previous token implementation, not this App
 
 Sources: [official token action](https://github.com/actions/create-github-app-token/tree/bcd2ba49218906704ab6c1aa796996da409d3eb1),
 [GitHub workflow-trigger rules](https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/trigger-a-workflow#triggering-a-workflow-from-a-workflow).
+
+
+### Live App integration evidence (2026-09-07)
+
+Before installing this change, a temporary maintainer-owned, fixed-candidate
+workflow exercised the same pinned token action and native squash mutation.
+It never wrote checks or bypassed the ruleset. Run
+[34152666030](https://github.com/dexsword/dextech/actions/runs/34152666030)
+confirmed REST `auto_merge.enabled_by.login` as `dextech-auto-merge[bot]`,
+method `squash`, and successful default post-job token revocation.
+
+[PR #24](https://github.com/dexsword/dextech/pull/24) had all three required
+GitHub Actions checks successful on source HEAD
+`f26f262746e77dc91fbed829de56f9484c5fddc4`:
+`checks` (101837360063), `Codex Review / gate` (101837382265), and
+`Auto Merge / eligible` (101837389336). Its synthetic candidate was
+`db09e188dba0a8ee426bb041840bb4fa810d8c41`; it had no competing required
+check rollup. GitHub's `isRequired` query identified the HEAD checks as required.
+A superseding commit automatically cancelled the old CI and review runs
+34152425830 and 34152425843. Current review run 34152442570 completed normally.
+
+An unresolved test conversation held the native request pending after token
+revocation. After that conversation was resolved, GitHub automatically merged
+PR #24 at 18:45:43 UTC, with REST `merged_by.login` equal to
+`dextech-auto-merge[bot]`. The squash commit was
+`ba97961e5c45b4731a072945e9ee981a1a9291ed`. Its real `push` event started
+[Deploy production run 34152935927](https://github.com/dexsword/dextech/actions/runs/34152935927).
+This verifies the external App identity, native merge, token-cleanup, and push
+trigger contracts against GitHub, independently of the controller's mocks.
+The permanent App request/publication path still needs its post-installation
+eligible-PR check; the temporary validation workflow is not part of this patch.
+
+The deployment's checks and Tailscale job steps passed; server SSH authentication
+and restricted sudo dispatch were accepted. The server then rejected admission
+before creating a release because free disk space was below its 2 GiB minimum.
+Read-only validation confirmed the existing production release remained healthy.
+Removing this task's disposable local test dependencies restores disk headroom;
+no backup, production artifact, or admission gate is removed or weakened. The
+next automatically merged commit must still pass the full deployment workflow.
