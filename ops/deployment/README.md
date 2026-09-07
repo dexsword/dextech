@@ -1,4 +1,4 @@
-# Manual production deployment — Phase 1
+# Manual production deployment over Tailscale
 
 This workflow is manual only. Installing or merging these files does not deploy.
 The root-installed server implementation is a separately reviewed control plane;
@@ -11,7 +11,7 @@ The checks job checks out `github.sha`, requires it to equal public main, uses
 Node 22, runs clean `npm ci`, the entire test suite, tracked-file and JavaScript
 syntax checks, synthetic health checks, and a production audit requiring zero
 high/critical vulnerabilities. CI uses the same `scripts/deployment-checks.sh`.
-Both actions are pinned to full upstream release commit SHAs.
+All actions are pinned to full upstream release commit SHAs.
 
 A separate fresh runner receives the production secrets only after checks and
 environment approval. It executes no repository code, downloads no artifacts,
@@ -19,6 +19,33 @@ and rechecks main before using OpenSSH. The server fetches public main itself
 and rechecks equality immediately before switching. If main advances, the run
 fails; dispatch a fresh run after reviewing the new main. There is no SHA input,
 branch input, tag deployment, push deployment or PR deployment.
+
+The deploy job first joins the tailnet using the official
+[`tailscale/github-action` v4.1.3](https://github.com/tailscale/github-action/tree/780049a30b6ff5c378a9e7b389d15ece7a204888),
+pinned to `780049a30b6ff5c378a9e7b389d15ece7a204888`. The reviewed upstream
+`action.yml` and implementation support OIDC authentication, ping failure
+handling and post-job logout. With workload identity federation, `TS_OAUTH_CLIENT_ID` and `TS_AUDIENCE` select the
+federated identity, and GitHub supplies a short-lived OIDC token. Only the deploy
+job grants `id-token: write`; checks retain only `contents: read`. No OAuth client
+secret or reusable Tailscale auth key is used.
+
+The runner is an ephemeral node with only `tag:github-dextech`, in-memory Tailscale
+state, no binary cache, and automatic post-job logout/daemon cleanup. If cleanup
+cannot complete, Tailscale's ephemeral-node expiry is the fallback. The action's
+`ping: 100.109.72.10` must succeed before the OpenSSH step runs. This verifies
+peer reachability (direct or relayed); SSH still has to pass TCP access and
+host-key/authentication checks. The action manages its own Node runtime; the
+application checks remain on Node 22.
+
+Deployment SSH goes exclusively to **100.109.72.10:22**, binds to the runner's
+`tailscale0` interface, and rejects any other configured host or port before SSH.
+There is no public-IP or DNS fallback. Runner DNS is left unchanged with
+`--accept-dns=false`, since the destination is a literal Tailscale IP. The existing
+tailnet policy permits only `tag:github-dextech` to `tag:dexserve` over TCP 22.
+Public SSH ingress is not required and must remain closed. Native OpenSSH still
+uses the restricted account and pinned DexServe host key; Tailscale does not
+replace SSH authentication or authorize arbitrary server commands. Tailnet join
+or ping failures stop the job without reaching deployment.
 
 The sole SSH command is `deploy <40 lowercase hex characters>`, with exactly one
 space, no extra arguments, newline, quoting or shell expansion. The login program
@@ -115,8 +142,10 @@ actionlint
 
 Offline tests inject switch/acceptance failures and test rollback, malformed SSH
 commands, unsafe archives, synthetic SQLite online backup/restoration, and
-non-mutating validation/idempotency. A real switch/rollback is deliberately not
-exercised in Phase 1.
+non-mutating validation/idempotency. `npm test` also validates the workflow
+contract and executes its SSH run block against fake local commands and synthetic
+credentials: no tailnet join, SSH connection or deployment is made by those tests.
+A real switch/rollback is deliberately not exercised by these validations.
 
 ## Retention and recovery evidence
 
@@ -142,24 +171,29 @@ restored gates passed; `rollback-needs-operator` requires immediate investigatio
 Do not replay the old PM2 cutover rollback for this systemd deployment scheme.
 Never restore a database automatically, and never overwrite repaired OAuth grants.
 
-## GitHub production environment setup (owner action, not done in Phase 1)
+## GitHub production environment configuration
 
-Create **Settings → Environments → production**. Restrict deployment branches to
-selected branch **main** (no tag rule); configure required reviewers and prevent
+Use the existing **Settings → Environments → production** configuration. Keep
+deployment branches restricted to selected branch **main** (no tag rule); configure required reviewers and prevent
 self-review where available. Protect main and require `CI / checks`. Reviewers
 must verify the exact main SHA and the deployment implementation before approval.
 
 | Name | Environment configuration | Value |
 | --- | --- | --- |
-| `DEXSERVE_HOST` | Variable | `96.126.101.59` (direct DexServe SSH address) |
+| `DEXSERVE_HOST` | Variable | `100.109.72.10` (DexServe Tailscale IP) |
 | `DEXSERVE_PORT` | Variable | `22` |
 | `DEXSERVE_DEPLOY_USER` | Variable | `dextech-deploy` |
+| `TS_OAUTH_CLIENT_ID` | Secret | Existing Tailscale federated identity client ID |
+| `TS_AUDIENCE` | Secret | Existing Tailscale federated identity audience |
 | `DEXSERVE_SSH_PRIVATE_KEY` | Secret | Complete dedicated Ed25519 private key, including final newline |
 | `DEXSERVE_KNOWN_HOSTS` | Secret | Pinned server-known-host entry from trusted operator handoff |
 
 Use the server's verified `ssh-ed25519` public host key. For port 22 the known-host
-line is `96.126.101.59 ssh-ed25519 <server-public-key>`; for a changed port use
-`[host]:port`. Do not replace pinning with unchecked `ssh-keyscan` during a run.
+line must match `100.109.72.10 ssh-ed25519 <server-public-key>` in the existing
+`DEXSERVE_KNOWN_HOSTS` secret. A public-IP-only entry will not match the tailnet
+destination. Never repair a mismatch with unchecked `ssh-keyscan`, disabled
+verification, a public fallback, or an open firewall port. This workflow update
+does not read or change any environment configuration or credential values.
 Private-key transfer uses Will's existing trusted administrative SSH identity;
 the restricted deployment identity cannot retrieve files. The private key is never
 stored in this repository, any release, CI artifact, report or deployment record.
@@ -175,6 +209,8 @@ updating the environment secret, verifying it, then removing the previous key.
    the active SHA and expected new main SHA; confirm no unintended schema change.
 3. In **Actions → Deploy production → Run workflow**, select **main**. There are
    no deployment inputs. Approve the `production` environment after checks pass.
+   The ephemeral runner must join with `tag:github-dextech` and pass the action
+   ping gate before OpenSSH can contact DexServe over its tailnet address.
 4. If main advances while checks/approval run, this run fails closed; dispatch a
    fresh run. Do not use “re-run” to deploy an old SHA or select another branch.
 5. Confirm the run succeeds and inspect the sanitized server record. Independently
