@@ -6,4 +6,5 @@ bookings.db-wal
 bookings.db-shm
 *.log
 .env
+*.key
 .DS_Store
