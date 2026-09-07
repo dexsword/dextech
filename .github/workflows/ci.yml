@@ -27,18 +27,8 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Reject tracked environment files and private keys
-        run: |
-          failed=0
-          while IFS= read -r -d '' file; do
-            case "$file" in
-              .env|*/.env|*.key|*.pem)
-                printf 'Forbidden tracked file: %s\n' "$file"
-                failed=1
-                ;;
-            esac
-          done < <(git ls-files -z)
-          exit "$failed"
+      - name: Reject tracked dependencies, credentials, and runtime data
+        run: bash scripts/check-tracked-files.sh
 
       - name: Set up Node.js
         uses: actions/setup-node@v6
@@ -49,6 +39,9 @@ jobs:
 
       - name: Install dependencies
         run: npm ci
+
+      - name: Run project tests
+        run: npm test
 
       - name: Check JavaScript syntax
         run: |
@@ -91,8 +84,10 @@ jobs:
           # Keep dotenv loading and legacy bookings.json migration away from checkout data.
           cp server.js "$smoke_dir/server.js"
           ln -s "$GITHUB_WORKSPACE/node_modules" "$smoke_dir/node_modules"
+          release_sha=$(git rev-parse HEAD)
           cd "$smoke_dir"
-          env -i PATH="$PATH" NODE_ENV=test PORT=3100 \
+          env -i PATH="$PATH" NODE_ENV=test HOST=127.0.0.1 PORT=3100 \
+            APP_RELEASE_SHA="$release_sha" \
             DB_PATH="$smoke_dir/bookings.db" \
             node server.js > "$server_log" 2>&1 &
           server_pid=$!
@@ -104,7 +99,7 @@ jobs:
             fi
             if curl --fail --silent --show-error --max-time 2 \
               http://127.0.0.1:3100/health > "$smoke_dir/health.json" &&
-              node -e 'const h = require(process.argv[1]); process.exit(h.status === "ok" && h.confirmed_bookings === 0 && h.email_enabled === false && h.gcal_enabled === false ? 0 : 1)' "$smoke_dir/health.json" &&
+              node -e 'const h = require(process.argv[1]); process.exit(h.status === "ok" && h.release_sha === process.argv[2] && h.confirmed_bookings === 0 && h.email_enabled === false && h.gcal_enabled === false ? 0 : 1)' "$smoke_dir/health.json" "$release_sha" &&
               kill -0 "$server_pid" 2>/dev/null; then
               echo 'Temporary server is healthy; integrations are disabled.'
               exit 0
