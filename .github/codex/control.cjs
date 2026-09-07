@@ -10,6 +10,7 @@ const MAX_PROMPT = 600000;
 const FEEDBACK_MARKER = '<!-- dextech-codex-review-feedback:v1 -->';
 const DIAGNOSTICS = Object.freeze({
   permission: 'permission-or-repository-setting-rejection',
+  app: 'merge-app-configuration-or-identity-rejected',
   mergeable: 'pr-already-immediately-mergeable',
   stale: 'stale-head-or-base',
   merge: 'stale-or-unavailable-merge-candidate',
@@ -290,7 +291,7 @@ async function publish(env, api) {
     env.CONFIRMED_HEAD === match.head && env.CONFIRMED_BASE === match.base &&
     env.CONFIRMED_MERGE === match.merge &&
     env.CONFIRMED_RUN === binding(env, match) && pr.draft === false &&
-    pr.auto_merge?.merge_method === 'squash';
+    appRequestMatches(pr, env.CONFIRMED_APP);
   const passed = reviewOK && classificationOK && (manual || confirmed);
   for (const kind of ['gate', 'eligible']) {
     const conclusion = kind === 'gate' ? (passed ? 'success' : 'failure') :
@@ -298,7 +299,7 @@ async function publish(env, api) {
     // Revalidate both bindings before EACH result, including between writes.
     if (passed && !manual) await requirements(env, api, match);
     const live = await currentCandidate(api, match);
-    if (passed && !manual && (live.draft !== false || live.auto_merge?.merge_method !== 'squash')) fail('unavailable');
+    if (passed && !manual && (live.draft !== false || !appRequestMatches(live, env.CONFIRMED_APP))) fail('unavailable');
     if (passed && manual && eligible && live.draft !== true) fail('inactive');
     await activeRun(env, api);
     const owned = await api(`/repos/${REPOSITORY}/check-runs/${ids[kind]}`);
@@ -387,6 +388,10 @@ async function revoke(pr, api) {
     variables: { id: pr.node_id }
   });
   if (result.data?.disablePullRequestAutoMerge?.pullRequest?.id !== pr.node_id) fail();
+  // Do not trust the mutation receipt alone, including across App ownership.
+  const live = await api(`/repos/${REPOSITORY}/pulls/${pr.number}`);
+  if (live.node_id !== pr.node_id || live.head?.sha !== pr.head?.sha ||
+      live.base?.sha !== pr.base?.sha || live.auto_merge !== null) fail('stale');
 }
 
 async function disarmAutoMerge(env, api) {
@@ -489,19 +494,33 @@ function checkAllowsNativeWait(check) {
   return typeof check.context === 'string' && ['SUCCESS', 'PENDING'].includes(check.state);
 }
 
-async function requestAutoMerge(env, api) {
+function appRequestMatches(pr, slug) {
+  return typeof slug === 'string' && /^[a-z0-9][a-z0-9-]{0,99}$/.test(slug) &&
+    pr.auto_merge?.merge_method === 'squash' &&
+    pr.auto_merge.enabled_by?.login === `${slug}[bot]`;
+}
+
+function mergeAppClient(env, fetcher = fetch) {
+  if (!env.MERGE_APP_TOKEN) fail('app');
+  return client({ GH_TOKEN: env.MERGE_APP_TOKEN }, fetcher);
+}
+
+async function requestAutoMerge(env, api, appApi) {
   const match = expected(env);
+  if (typeof appApi !== 'function' || !/^[a-z0-9][a-z0-9-]{0,99}$/.test(env.MERGE_APP_SLUG || '')) fail('app');
+  const appLogin = `${env.MERGE_APP_SLUG}[bot]`;
   if (env.DISARM_RESULT !== 'success' || env.ELIGIBILITY_RESULT !== 'success' ||
       env.ELIGIBLE !== 'true' || !policy.reviewPass(env.REVIEW_JSON, env.REVIEW_RESULT)) fail('invalid');
   await pendingChecks(env, api, match);
   await requirements(env, api, match);
   // The live PR read is immediately before the mutation. expectedHeadOid also
   // binds the head atomically inside GitHub; strict branch protection guards main.
-  const pr = await currentCandidate(api, match, true);
+  const pr = await currentCandidate(appApi, match, true);
   if (pr.auto_merge) {
     if (pr.auto_merge.merge_method !== 'squash') fail('unavailable');
+    if (pr.auto_merge.enabled_by?.login !== appLogin) fail('app');
   } else {
-    const result = await api('/graphql', 'POST', {
+    const result = await appApi('/graphql', 'POST', {
       query: 'mutation($id: ID!, $head: GitObjectID!) { enablePullRequestAutoMerge(input: {pullRequestId: $id, expectedHeadOid: $head, mergeMethod: SQUASH}) { pullRequest { id headRefOid autoMergeRequest { mergeMethod } } } }',
       variables: { id: pr.node_id, head: match.head }
     });
@@ -510,9 +529,10 @@ async function requestAutoMerge(env, api) {
         enabled.autoMergeRequest?.mergeMethod !== 'SQUASH') fail('unexpected');
   }
   // Require a fresh independent read-back, including the idempotent path.
-  const confirmed = await currentCandidate(api, match, true);
+  const confirmed = await currentCandidate(appApi, match, true);
   if (confirmed.node_id !== pr.node_id || confirmed.auto_merge?.merge_method !== 'squash') fail('unavailable');
-  return { confirmed_head: match.head, confirmed_base: match.base, confirmed_merge: match.merge, confirmed_run: binding(env, match) };
+  if (confirmed.auto_merge.enabled_by?.login !== appLogin) fail('app');
+  return { confirmed_head: match.head, confirmed_base: match.base, confirmed_merge: match.merge, confirmed_run: binding(env, match), confirmed_app: env.MERGE_APP_SLUG };
 }
 
 async function main(env) {
@@ -523,7 +543,7 @@ async function main(env) {
     case 'publish': return publish(env, client(env));
     case 'feedback': return publishFeedback(env, client(env));
     case 'disarm': return disarmAutoMerge(env, client(env));
-    case 'request': return output(env, await requestAutoMerge(env, client(env)));
+    case 'request': return output(env, await requestAutoMerge(env, client(env), mergeAppClient(env)));
     default: fail();
   }
 }
@@ -534,4 +554,4 @@ if (require.main === module) main(process.env).catch(error => {
 });
 
 module.exports = { expected, client, snapshot, candidate, readBlob, classifyCandidate, prepare,
-  publish, diagnostic, feedbackBody, publishFeedback, disarmAutoMerge, requestAutoMerge, requirements };
+  mergeAppClient, publish, diagnostic, feedbackBody, publishFeedback, disarmAutoMerge, requestAutoMerge, requirements };

@@ -38,3 +38,8 @@ jobs:
         run: bash scripts/deployment-checks.sh
       - name: Audit production dependencies
         run: npm audit --omit=dev --audit-level=high
+      # One-time installation evidence; archived run retention must not affect
+      # future application CI. The operator command remains available afterward.
+      - name: Verify live merge App contracts for installation
+        if: github.repository == 'dexsword/dextech' && github.event.pull_request.number == 23 && github.event.pull_request.head.repo.full_name == 'dexsword/dextech'
+        run: node scripts/verify-merge-app-live.cjs

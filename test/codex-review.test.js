@@ -6,7 +6,10 @@ const os = require('node:os');
 const path = require('node:path');
 const { execFileSync } = require('node:child_process');
 const p = require('../.github/codex/policy.cjs');
-const c = require('../.github/codex/control.cjs');
+const control = require('../.github/codex/control.cjs');
+// Existing fixtures use a shared fake transport; credential-routing tests below
+// pass separate read and App transports to the same production implementation.
+const c = { ...control, requestAutoMerge: (env, api, appApi = api) => control.requestAutoMerge(env, api, appApi) };
 const schema = require('../.github/codex/review.schema.json');
 const base = 'a'.repeat(40), head = 'b'.repeat(40), merge = 'e'.repeat(40);
 const expected = { number: 12, base, head, merge };
@@ -14,7 +17,7 @@ const pr = () => ({ number: 12, node_id: 'PR_fixture', state: 'open', draft: fal
   base: { repo: { full_name: 'dexsword/dextech' }, ref: 'main', sha: base },
   head: { repo: { full_name: 'dexsword/dextech' }, sha: head } });
 const clean = () => ({ verdict: 'pass', confidence: 0.97, blocking_findings: [], summary: 'Correct patch.' });
-const env = () => ({ HEAD_SHA: head, BASE_SHA: base, MERGE_SHA: merge, PR_NUMBER: '12', GITHUB_RUN_ID: '123',
+const env = () => ({ MERGE_APP_SLUG: 'dextech-merge', HEAD_SHA: head, BASE_SHA: base, MERGE_SHA: merge, PR_NUMBER: '12', GITHUB_RUN_ID: '123',
   GITHUB_RUN_ATTEMPT: '1', GATE_ID: '101', ELIGIBLE_ID: '102', ELIGIBLE: 'true',
   AUTO_MERGE_RESULT: 'skipped', DISARM_RESULT: 'success', ELIGIBILITY_RESULT: 'success', REVIEW_RESULT: 'success', REVIEW_JSON: JSON.stringify(clean()) });
 const check = kind => ({ name: p.CHECKS[kind], head_sha: head, external_id: `dextech:12:123:1:${head}:${base}`,
@@ -54,7 +57,7 @@ function mockAPI(current = pr(), transform = value => value) {
     if (endpoint.endsWith('/pulls/12')) return current;
     if (endpoint === '/graphql' && body.query.startsWith('query')) return readiness(current);
     if (endpoint === '/graphql') {
-      current.auto_merge = { merge_method: 'squash' };
+      current.auto_merge = { merge_method: 'squash', enabled_by: { login: 'dextech-merge[bot]' } };
       return { data: { enablePullRequestAutoMerge: { pullRequest: { id: current.node_id, headRefOid: head, autoMergeRequest: { mergeMethod: 'SQUASH' } } } } };
     }
     throw new Error('Unexpected mock request');
@@ -332,7 +335,7 @@ test('workflow trust boundaries, final Codex step, pins and self-exclusion remai
   assert.match(workflow, /branches: \[main\]/);
   assert.match(workflow, /head\.repo\.full_name == 'dexsword\/dextech'/);
   assert.match(workflow, /cancel-in-progress: true/);
-  assert.doesNotMatch(workflow, /persist-credentials: true|pull_request:\s|continue-on-error|secrets\.(?!OPENAI_API_KEY)/);
+  assert.doesNotMatch(workflow, /persist-credentials: true|pull_request:\s|continue-on-error|secrets\.(?!OPENAI_API_KEY|DEXTECH_MERGE_APP_PRIVATE_KEY)/);
   for (const use of workflow.matchAll(/uses: ([^\s]+)/g)) assert.match(use[1], /@[a-f0-9]{40}$/);
   const review = workflow.split('\n  review:')[1].split('\n  disarm:')[0];
   assert.match(review, /permissions:\n      contents: read\n/);
@@ -361,14 +364,16 @@ test('workflow trust boundaries, final Codex step, pins and self-exclusion remai
 
 
 test('previous native auto-merge is disabled before publishing eligibility/gate results', async () => {
-  const current = { ...pr(), auto_merge: { merge_method: 'squash' } };
+  const current = { ...pr(), auto_merge: { merge_method: 'squash', enabled_by: { login: 'dextech-merge[bot]' } } };
   const calls = [];
+  let disabled = false;
   await c.disarmAutoMerge(env(), async (endpoint, method, body) => {
     calls.push({ endpoint, method, body });
-    if (endpoint.endsWith('/pulls/12')) return current;
+    if (endpoint.endsWith('/pulls/12')) return disabled ? { ...current, auto_merge: null } : current;
+    disabled = true;
     return { data: { disablePullRequestAutoMerge: { pullRequest: { id: current.node_id } } } };
   });
-  assert.equal(calls.length, 2);
+  assert.equal(calls.length, 3);
   assert.match(calls[1].body.query, /disablePullRequestAutoMerge/);
   assert.doesNotMatch(calls[1].body.query, /enablePullRequestAutoMerge|expectedHeadOid/);
   const workflow = fs.readFileSync(path.join(__dirname, '../.github/workflows/codex-review.yml'), 'utf8');
@@ -584,7 +589,7 @@ function orderAPI({ existing, rejectRequest = false, badMutation = false, unconf
   changedMain = false, current = pr() } = {}) {
   const calls = [], checks = { gate: check('gate'), eligible: check('eligible') };
   current = structuredClone(current);
-  if (existing) current.auto_merge = { merge_method: existing };
+  if (existing) current.auto_merge = { merge_method: existing, enabled_by: { login: 'dextech-merge[bot]' } };
   const api = async (endpoint, method = 'GET', body) => {
     calls.push({ endpoint, method, body });
     for (const [kind, id] of [['gate', '101'], ['eligible', '102']]) {
@@ -605,7 +610,7 @@ function orderAPI({ existing, rejectRequest = false, badMutation = false, unconf
     if (endpoint === '/graphql') {
       assert.ok(Object.values(checks).every(x => x.status === 'in_progress' && x.conclusion === null));
       if (rejectRequest) throw new Error('SYNTHETIC_UNTRUSTED_API_BODY');
-      if (!unconfirmed) current.auto_merge = { merge_method: 'squash' };
+      if (!unconfirmed) current.auto_merge = { merge_method: 'squash', enabled_by: { login: 'dextech-merge[bot]' } };
       return { data: { enablePullRequestAutoMerge: { pullRequest: {
         id: current.node_id, headRefOid: head, autoMergeRequest: badMutation ? null : { mergeMethod: 'SQUASH' }
       } } } };
@@ -620,14 +625,14 @@ function publicationEnv(t, confirmation = {}) {
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
   return { ...env(), GITHUB_OUTPUT: path.join(dir, 'output'), AUTO_MERGE_RESULT: 'success',
     CONFIRMED_HEAD: confirmation.confirmed_head, CONFIRMED_BASE: confirmation.confirmed_base, CONFIRMED_MERGE: confirmation.confirmed_merge,
-    CONFIRMED_RUN: confirmation.confirmed_run };
+    CONFIRMED_RUN: confirmation.confirmed_run, CONFIRMED_APP: confirmation.confirmed_app };
 }
 
 test('request and read-back confirmation precede both successful required checks', async t => {
   const mock = orderAPI();
   const confirmation = await c.requestAutoMerge(env(), mock.api);
   assert.ok(Object.values(mock.checks).every(x => x.status === 'in_progress'));
-  assert.deepEqual(confirmation, { confirmed_head: head, confirmed_base: base, confirmed_merge: merge, confirmed_run: `123:1:${head}:${merge}:${base}` });
+  assert.deepEqual(confirmation, { confirmed_head: head, confirmed_base: base, confirmed_merge: merge, confirmed_run: `123:1:${head}:${merge}:${base}`, confirmed_app: 'dextech-merge' });
   await c.publish(publicationEnv(t, confirmation), mock.api);
   assert.ok(Object.values(mock.checks).every(x => x.status === 'completed' && x.conclusion === 'success'));
   const enableIndex = mock.calls.findIndex(x => x.body?.query?.startsWith('mutation'));
@@ -754,12 +759,12 @@ test('workflow orders disarming, evaluation, native request, then publication wi
   assert.match(job('disarm'), /needs: snapshot/);
   for (const name of ['eligibility', 'review']) assert.match(job(name), /needs: \[snapshot, disarm\]/);
   assert.match(job('auto-merge'), /needs: \[snapshot, disarm, eligibility, review\]/);
-  assert.match(job('auto-merge'), /contents: write\n      pull-requests: write\n      checks: read/);
+  assert.match(job('auto-merge'), /contents: read\n      pull-requests: read\n      checks: read/);
   assert.doesNotMatch(job('auto-merge'), /checks: write|needs\.publish|OPENAI_API_KEY/);
   assert.match(job('publish'), /needs: \[snapshot, eligibility, review, disarm, auto-merge\]/);
   assert.match(job('publish'), /contents: read\n      checks: write/);
   assert.doesNotMatch(job('publish'), /pull-requests: write|contents: write/);
-  for (const field of ['confirmed_head', 'confirmed_base', 'confirmed_merge', 'confirmed_run']) {
+  for (const field of ['confirmed_head', 'confirmed_base', 'confirmed_merge', 'confirmed_run', 'confirmed_app']) {
     assert.ok(job('publish').includes(`needs.auto-merge.outputs.${field}`));
   }
   const source = fs.readFileSync(path.join(__dirname, '../.github/codex/control.cjs'), 'utf8');
@@ -1003,7 +1008,7 @@ test('reruns reclaim existing pending head checks and close/reopen disarms witho
   const values = { ...env(), GITHUB_EVENT_PATH: path.join(dir, 'event'), GITHUB_OUTPUT: path.join(dir, 'output'),
     GITHUB_SHA: base, GITHUB_REPOSITORY: p.REPOSITORY, GITHUB_EVENT_NAME: 'pull_request_target' };
   const checks = [], mutations = [];
-  let current = { ...pr(), auto_merge: { merge_method: 'squash' } };
+  let current = { ...pr(), auto_merge: { merge_method: 'squash', enabled_by: { login: 'dextech-merge[bot]' } } };
   const api = async (url, method = 'GET', body) => {
     if (body?.query?.startsWith('mutation')) {
       mutations.push(body.query); current.auto_merge = null;
@@ -1262,4 +1267,141 @@ test('snapshot ignores title/body edits before API access but retargets create p
   }, async () => assert.fail('unexpected metadata retry'));
   assert.equal(writes.length, 2);
   assert.ok(writes.every(check => check.head_sha === head && check.status === 'in_progress'));
+});
+
+
+test('App transport is restricted to final candidate reads, native request, and confirmation', async () => {
+  const mock = orderAPI(), readCalls = [], appCalls = [];
+  const read = async (...args) => { readCalls.push(args); return mock.api(...args); };
+  const app = async (...args) => { appCalls.push(args); return mock.api(...args); };
+  await control.requestAutoMerge(env(), read, app);
+  assert.equal(readCalls.some(([, , body]) => body?.query?.startsWith('mutation')), false);
+  assert.ok(readCalls.some(([url]) => url.includes('/actions/')));
+  assert.ok(readCalls.some(([url]) => url.includes('/check-runs/')));
+  assert.equal(appCalls.some(([url]) => url.includes('/actions/') || url.includes('/check-runs/')), false);
+  assert.equal(appCalls.filter(([, , body]) => body?.query?.startsWith('mutation')).length, 1);
+  const index = appCalls.findIndex(([, , body]) => body?.query?.startsWith('mutation'));
+  assert.equal(appCalls[index - 1][0], '/repos/dexsword/dextech/pulls/12');
+  assert.match(appCalls[index][2].query, /enablePullRequestAutoMerge/);
+  assert.deepEqual(appCalls[index][2].variables, { id: 'PR_fixture', head });
+});
+
+test('App credentials fail closed without falling back to GITHUB_TOKEN or logging credential values', async () => {
+  let called = false;
+  for (const token of [undefined, '']) {
+    assert.throws(() => c.mergeAppClient({ GH_TOKEN: 'READ_ONLY_SYNTHETIC_TOKEN', MERGE_APP_TOKEN: token },
+      async () => { called = true; }), error => c.diagnostic(error).includes('merge-app-configuration'));
+  }
+  assert.equal(called, false);
+  const app = c.mergeAppClient({ GH_TOKEN: 'READ_ONLY_SYNTHETIC_TOKEN', MERGE_APP_TOKEN: 'APP_SYNTHETIC_TOKEN' },
+    async (url, options) => {
+      assert.equal(url, 'https://api.github.com/repos/dexsword/dextech/pulls/12');
+      assert.equal(options.headers.Authorization, 'Bearer APP_SYNTHETIC_TOKEN');
+      return { ok: true, status: 200, json: async () => pr() };
+    });
+  await app('/repos/dexsword/dextech/pulls/12');
+  const mock = orderAPI();
+  await assert.rejects(control.requestAutoMerge(env(), mock.api), error => c.diagnostic(error).includes('merge-app-configuration'));
+  assert.equal(mock.calls.length, 0);
+});
+
+test('App final revalidation rejects a changed head and existing requests from another identity', async () => {
+  for (const changed of ['head', 'base', 'identity', 'missing-identity']) {
+    const mock = orderAPI({ existing: changed.includes('identity') ? 'squash' : undefined });
+    const app = async (url, method, body) => {
+      const result = await mock.api(url, method, body);
+      if (url.endsWith('/pulls/12')) {
+        if (changed === 'head') result.head.sha = base;
+        if (changed === 'base') result.base.sha = head;
+        if (changed === 'identity') result.auto_merge.enabled_by.login = 'github-actions[bot]';
+        if (changed === 'missing-identity') delete result.auto_merge.enabled_by;
+      }
+      return result;
+    };
+    await assert.rejects(control.requestAutoMerge(env(), mock.api, app));
+    assert.equal(mock.calls.some(call => call.body?.query?.startsWith('mutation')), false);
+  }
+});
+
+test('App identity must also match on independent post-mutation confirmation', async () => {
+  const mock = orderAPI();
+  let mutated = false;
+  await assert.rejects(control.requestAutoMerge(env(), mock.api, async (url, method, body) => {
+    const result = await mock.api(url, method, body);
+    if (body?.query?.startsWith('mutation')) mutated = true;
+    if (mutated && url.endsWith('/pulls/12')) result.auto_merge.enabled_by.login = 'github-actions[bot]';
+    return result;
+  }), error => c.diagnostic(error).includes('merge-app-configuration'));
+  assert.ok(Object.values(mock.checks).every(check => check.status === 'in_progress'));
+});
+
+test('only the separate trusted final job receives the scoped, revocable App token', () => {
+  const workflow = fs.readFileSync(path.join(__dirname, '../.github/workflows/codex-review.yml'), 'utf8');
+  const [before, job] = workflow.split('\n  auto-merge:\n');
+  assert.doesNotMatch(before, /DEXTECH_MERGE_APP|MERGE_APP_TOKEN|create-github-app-token/);
+  assert.match(job, /actions\/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0/);
+  assert.match(job, /app-id: \$\{\{ vars.DEXTECH_MERGE_APP_ID \}\}/);
+  assert.match(job, /private-key: \$\{\{ secrets.DEXTECH_MERGE_APP_PRIVATE_KEY \}\}/);
+  assert.match(job, /owner: dexsword\n          repositories: dextech/);
+  assert.match(job, /permission-contents: write\n          permission-pull-requests: write/);
+  assert.doesNotMatch(job, /permission-(?:actions|checks|administration|workflows):|skip-token-revoke: true|path: candidate/);
+  assert.match(job, /MERGE_APP_TOKEN: \$\{\{ steps.merge-app.outputs.token \}\}/);
+  assert.match(job, /MERGE_APP_SLUG: \$\{\{ steps.merge-app.outputs.app-slug \}\}/);
+  assert.match(job, /GH_TOKEN: \$\{\{ github.token \}\}/);
+  assert.match(job, /ref: \$\{\{ needs.snapshot.outputs.base \}\}/);
+  assert.match(job, /permissions:\n      actions: read\n      contents: read\n      pull-requests: read\n      checks: read/);
+});
+
+
+test('publisher rejects replacement native requests before and between successful check writes', async t => {
+  for (const replaceAt of [0, 1]) {
+    const mock = orderAPI();
+    const confirmation = await c.requestAutoMerge(env(), mock.api);
+    let writes = 0;
+    const api = async (url, method, body) => {
+      const result = await mock.api(url, method, body);
+      if (method === 'PATCH' && body?.conclusion === 'success') writes++;
+      if (url.endsWith('/pulls/12') && writes >= replaceAt) {
+        result.auto_merge.enabled_by.login = 'github-actions[bot]';
+      }
+      return result;
+    };
+    await assert.rejects(c.publish(publicationEnv(t, confirmation), api));
+    assert.equal(writes, replaceAt);
+    assert.equal(Object.values(mock.checks).every(check => check.conclusion === 'success'), false);
+  }
+});
+
+test('publisher requires the App identity in the trusted request receipt', async t => {
+  for (const identity of [undefined, '', 'github-actions', 'invalid[bot]']) {
+    const mock = orderAPI();
+    const confirmation = await c.requestAutoMerge(env(), mock.api);
+    await assert.rejects(c.publish({ ...publicationEnv(t, confirmation), CONFIRMED_APP: identity }, mock.api));
+    assert.equal(mock.calls.some(call => call.body?.conclusion === 'success'), false);
+  }
+});
+
+
+test('revocation requires independent absence and the same head/base after mutation', async () => {
+  for (const variant of ['surviving-request', 'missing-field', 'changed-head', 'changed-base', 'changed-id']) {
+    const current = { ...pr(), auto_merge: { merge_method: 'squash', enabled_by: { login: 'dextech-merge[bot]' } } };
+    let mutated = false;
+    const api = async (endpoint) => {
+      if (endpoint === '/graphql') {
+        mutated = true;
+        return { data: { disablePullRequestAutoMerge: { pullRequest: { id: current.node_id } } } };
+      }
+      if (!mutated) return current;
+      const live = structuredClone(current);
+      live.auto_merge = null;
+      if (variant === 'surviving-request') live.auto_merge = current.auto_merge;
+      if (variant === 'missing-field') delete live.auto_merge;
+      if (variant === 'changed-head') live.head.sha = base;
+      if (variant === 'changed-base') live.base.sha = head;
+      if (variant === 'changed-id') live.node_id = 'different';
+      return live;
+    };
+    await assert.rejects(c.disarmAutoMerge(env(), api));
+    assert.equal(mutated, true);
+  }
 });

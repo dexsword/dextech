@@ -191,6 +191,7 @@ jobs:
           CONFIRMED_MERGE: ${{ needs.auto-merge.outputs.confirmed_merge }}
           CONFIRMED_BASE: ${{ needs.auto-merge.outputs.confirmed_base }}
           CONFIRMED_RUN: ${{ needs.auto-merge.outputs.confirmed_run }}
+          CONFIRMED_APP: ${{ needs.auto-merge.outputs.confirmed_app }}
         run: node control/.github/codex/control.cjs publish
 
   feedback:
@@ -229,24 +230,39 @@ jobs:
     timeout-minutes: 5
     permissions:
       actions: read
-      contents: write
-      pull-requests: write
+      contents: read
+      pull-requests: read
       checks: read
     outputs:
       confirmed_head: ${{ steps.request.outputs.confirmed_head }}
       confirmed_merge: ${{ steps.request.outputs.confirmed_merge }}
       confirmed_base: ${{ steps.request.outputs.confirmed_base }}
       confirmed_run: ${{ steps.request.outputs.confirmed_run }}
+      confirmed_app: ${{ steps.request.outputs.confirmed_app }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           ref: ${{ needs.snapshot.outputs.base }}
           persist-credentials: false
           path: control
+      # Only this trusted final job gets App credentials. Scope the token to
+      # this repository and these two permissions; retain post-job revocation.
+      - name: Create scoped merge App token
+        id: merge-app
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          app-id: ${{ vars.DEXTECH_MERGE_APP_ID }}
+          private-key: ${{ secrets.DEXTECH_MERGE_APP_PRIVATE_KEY }}
+          owner: dexsword
+          repositories: dextech
+          permission-contents: write
+          permission-pull-requests: write
       - name: Request and confirm native squash auto-merge while checks are pending
         id: request
         env:
           GH_TOKEN: ${{ github.token }}
+          MERGE_APP_TOKEN: ${{ steps.merge-app.outputs.token }}
+          MERGE_APP_SLUG: ${{ steps.merge-app.outputs.app-slug }}
           HEAD_SHA: ${{ needs.snapshot.outputs.head }}
           MERGE_SHA: ${{ needs.snapshot.outputs.merge }}
           BASE_SHA: ${{ needs.snapshot.outputs.base }}

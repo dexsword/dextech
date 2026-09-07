@@ -318,7 +318,7 @@ contract tests; no settings were changed to simulate them.
 
 ## CI waiting and base-retarget follow-up
 
-The controller now delegates pending CI to [GitHub native auto-merge](https://docs.github.com/en/pull-requests/how-tos/merge-and-close-pull-requests/automatically-merging-a-pull-request),
+The controller delegates pending CI to [GitHub native auto-merge](https://docs.github.com/en/pull-requests/how-tos/merge-and-close-pull-requests/automatically-merging-a-pull-request),
 removing the ten-minute CI polling cutoff. This is independent of the v1.11
 wrapper rollback: the reviewer still has its existing 20-minute job limit, and
 merge-candidate discovery retains its bounded metadata retries. A missing native
@@ -334,9 +334,140 @@ publication, base-retarget triggering, ignored edit isolation, and preservation
 of the native required check name. The earlier live integration evidence above
 predates this follow-up; it does not claim a live retarget or slow-CI experiment.
 
-After this base-controlled workflow reaches main, validate a harmless eligible PR
+Validate a harmless eligible PR
 with CI still pending when review completes: native squash auto-merge should be
 enabled, custom checks should pass on HEAD, and GitHub should retain the CI hold.
 Also retarget a harmless PR onto main and confirm both workflows start; a later
 title/body edit must start no jobs, cancel no active run, and create no second
-required `checks` context. Neither check requires changing branch protection.
+required `checks` context.
+
+
+## App-authenticated native auto-merge and production deployment
+
+The final auto-merge job now mints a short-lived installation token with the
+GitHub-owned `actions/create-github-app-token` **v3.2.0**, pinned to
+`bcd2ba49218906704ab6c1aa796996da409d3eb1`. It uses the configured numeric App ID
+through the release's supported `app-id` input. Only that job references:
+
+| GitHub configuration | Kind | Purpose |
+| --- | --- | --- |
+| `DEXTECH_MERGE_APP_ID` | Repository variable | Installed GitHub App ID |
+| `DEXTECH_MERGE_APP_PRIVATE_KEY` | Repository secret | App signing key; never print or retrieve it |
+
+The App is installed only on `dexsword/dextech` with Contents and Pull requests
+read/write. The workflow further scopes its token to that repository and those
+two permissions. Default post-job token revocation remains enabled. No App
+administration, Actions, Checks, workflow-write, or ruleset-bypass permission is
+needed. `GITHUB_TOKEN` in the request job is read-only and supplies the Actions,
+required-check, and review-metadata queries. The App token supplies only final
+head/base/merge revalidation, `enablePullRequestAutoMerge` with expected HEAD and
+SQUASH, and independent confirmation. Existing requests and read-back must name
+this App's bot identity. The trusted request receipt carries the App slug;
+publication rechecks that identity before each successful required check, using
+its existing read token and no App credentials. A replaced request fails closed.
+An old `github-actions[bot]` request cannot masquerade as
+an App request. There is no token fallback or immediate merge endpoint.
+
+The read-only Codex job, eligibility checks, publication and metadata-only feedback
+receive no App credentials. Missing configuration, insufficient App permissions,
+wrong identity, stale candidates, or failed token creation fail closed. Existing
+stale-request disarming is retained and must also revoke App-created requests.
+
+GitHub suppresses ordinary push workflows originating from `GITHUB_TOKEN`. App-
+requested native auto-merges let the resulting main push start the existing
+`Deploy production` workflow. That workflow retains push/main and manual dispatch,
+exact-SHA testing/audit, the production environment, Tailscale-only SSH, host
+verification, backup, health/Calendar checks, rollback, and non-cancelling
+production concurrency. No review job directly deploys, dispatches an arbitrary
+SHA, or receives production credentials.
+
+For setup, keep the existing three required GitHub Actions contexts, up-to-date
+branches, and resolved conversations. Do not give the App bypass access. For a
+missing/invalid key, update Settings → Secrets and variables → Actions → Secrets
+→ `DEXTECH_MERGE_APP_PRIVATE_KEY`; update the matching App ID under Variables.
+For permission rejection, update the App registration's Repository permissions
+and accept the installation permission update for dextech. Never paste keys into
+PRs, logs, reports, or chat. Rotate by installing a new App key, updating the
+secret, verifying an eligible PR, and revoking the old key. To disable, suspend
+the installation and disarm pending native requests; human merging and the
+existing manual deployment fallback remain available.
+
+This control change remains automatically ineligible. Its installation requires
+an explicit maintainer merge decision with required checks enforced. Because
+`pull_request_target` reads main, verify the newly installed App path with a fresh,
+harmless eligible PR afterward. Capture the review HEAD/merge binding, native
+merge actor, resulting squash commit, push-triggered deployment run, and public
+release SHA. Confirm delayed CI does not require another review and that token
+cleanup does not cancel native auto-merge. Confirm ordinary title/body edits
+start no jobs or new review cycles and every required check stays on the source HEAD. Earlier PR #17
+and PR18–21 evidence describes the previous token implementation, not this App test.
+
+Sources: [official token action](https://github.com/actions/create-github-app-token/tree/bcd2ba49218906704ab6c1aa796996da409d3eb1),
+[GitHub workflow-trigger rules](https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/trigger-a-workflow#triggering-a-workflow-from-a-workflow).
+
+
+### Live App integration evidence (2026-09-07)
+
+Before installing this change, a temporary maintainer-owned, fixed-candidate
+workflow exercised the same pinned token action and native squash mutation.
+It never wrote checks or bypassed the ruleset. Run
+[34152666030](https://github.com/dexsword/dextech/actions/runs/34152666030)
+confirmed REST `auto_merge.enabled_by.login` as `dextech-auto-merge[bot]`,
+method `squash`, and successful default post-job token revocation.
+
+[PR #24](https://github.com/dexsword/dextech/pull/24) had all three required
+GitHub Actions checks successful on source HEAD
+`f26f262746e77dc91fbed829de56f9484c5fddc4`:
+`checks` (101837360063), `Codex Review / gate` (101837382265), and
+`Auto Merge / eligible` (101837389336). Its synthetic candidate was
+`db09e188dba0a8ee426bb041840bb4fa810d8c41`; it had no competing required
+check rollup. GitHub's `isRequired` query identified the HEAD checks as required.
+A superseding commit automatically cancelled the old CI and review runs
+34152425830 and 34152425843. Current review run 34152442570 completed normally.
+
+An unresolved test conversation held the native request pending after token
+revocation. After that conversation was resolved, GitHub automatically merged
+PR #24 at 18:45:43 UTC, with REST `merged_by.login` equal to
+`dextech-auto-merge[bot]`. The squash commit was
+`ba97961e5c45b4731a072945e9ee981a1a9291ed`. Its real `push` event started
+[Deploy production run 34152935927](https://github.com/dexsword/dextech/actions/runs/34152935927).
+This verifies the external App identity, native merge, token-cleanup, and push
+trigger contracts against GitHub, independently of the controller's mocks.
+The permanent App request/publication path still needs its post-installation
+eligible-PR check; the temporary validation workflow is not part of this patch.
+
+The deployment's checks and Tailscale job steps passed; server SSH authentication
+and restricted sudo dispatch were accepted. The server then rejected admission
+before creating a release because free disk space was below its 2 GiB minimum.
+Read-only validation confirmed the existing production release remained healthy.
+Removing this task's disposable local test dependencies restores disk headroom;
+no backup, production artifact, or admission gate is removed or weakened. The
+next automatically merged commit must still pass the full deployment workflow.
+
+The read-only regression is executable with Node 22 (public GitHub reads, no credentials):
+
+```sh
+node scripts/verify-merge-app-live.cjs
+```
+
+It makes only GitHub GET requests against the completed public test, checks the
+App merge actor and squash parent count, all three exact-HEAD required checks,
+successful token cleanup before merging, cancelled stale runs, and the deployment
+workflow's actual push event and merge SHA. It passed against live GitHub on
+2026-09-07. It deliberately does not claim the disk-rejected deployment succeeded.
+The installation PR #23 also runs it as a native CI step, providing automated
+GitHub-hosted verification before installation. That one-time step is scoped to
+same-repository PR #23; future application CI does not depend on retention of these
+historical runs. The standalone command remains available for operator diagnosis.
+The check receives no tokens or secrets and prints only a fixed pass/fail message.
+
+Cross-actor revocation was also exercised live: the App installation probe run
+34153250579 queued PR #23's native request, and GitHub's PR timeline records
+`github-actions[bot]` disabling it at 18:55:30 UTC on the next head. The installation
+CI regression now verifies this public event against that completed probe.
+The controller additionally requires an independent PR read after every revoke:
+the request must be explicitly null and the PR ID, source head, and base must
+still match. A permission error, surviving request, missing field, or changed
+candidate fails the disarm job and cannot publish a successful gate. This does
+not add App credentials to snapshot/disarm or prevent a separately authorized
+maintainer from queuing native merge for an ineligible installation after disarm.
