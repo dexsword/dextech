@@ -1,0 +1,2 @@
+Website changes are reviewed through pull requests and checked before merging.
+Checks apply to the exact proposed commit.
