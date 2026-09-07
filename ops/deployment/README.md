@@ -1,12 +1,18 @@
-# Manual production deployment over Tailscale
+# Automatic production deployment over Tailscale
 
-This workflow is manual only. Installing or merging these files does not deploy.
+Every push to `main` starts this deployment workflow, including the push created
+by merging the PR that enables it. `workflow_dispatch` remains a manual fallback.
+The deployment proceeds only after its checks and existing `production`
+environment protections pass; required approvals, if configured, still apply.
 The root-installed server implementation is a separately reviewed control plane;
 GitHub never uploads code to it and repository changes cannot replace it.
 
 ## Trust and command contract
 
-Only `workflow_dispatch` on `dexsword/dextech`'s `refs/heads/main` is eligible.
+Only `push` and `workflow_dispatch` on `dexsword/dextech`'s `refs/heads/main` are
+eligible. There are no path filters: documentation, dependencies, configuration,
+workflows and application changes merged into main all use the same checks and
+deployment path. PR events, other branches, tags and forks cannot deploy.
 The checks job checks out `github.sha`, requires it to equal public main, uses
 Node 22, runs clean `npm ci`, the entire test suite, tracked-file and JavaScript
 syntax checks, synthetic health checks, and a production audit requiring zero
@@ -17,8 +23,16 @@ A separate fresh runner receives the production secrets only after checks and
 environment approval. It executes no repository code, downloads no artifacts,
 and rechecks main before using OpenSSH. The server fetches public main itself
 and rechecks equality immediately before switching. If main advances, the run
-fails; dispatch a fresh run after reviewing the new main. There is no SHA input,
-branch input, tag deployment, push deployment or PR deployment.
+fails; the newer main push starts its own run, or an operator can dispatch a fresh
+run after reviewing current main. There is no arbitrary SHA input or deployment
+of a tag, PR head or alternate branch. Automatic runs deploy their exact push
+SHA, and manual runs deploy their exact workflow SHA. Neither substitutes a newer
+commit after testing.
+
+The existing `dextech-production` concurrency group and
+`cancel-in-progress: false` remain unchanged. Running deployments are not
+cancelled by newer pushes. This does not guarantee that every intermediate SHA
+will reach production: a superseded SHA must fail the current-main equality gate.
 
 The deploy job first joins the tailnet using the official
 [`tailscale/github-action` v4.1.3](https://github.com/tailscale/github-action/tree/780049a30b6ff5c378a9e7b389d15ece7a204888),
@@ -143,7 +157,9 @@ actionlint
 Offline tests inject switch/acceptance failures and test rollback, malformed SSH
 commands, unsafe archives, synthetic SQLite online backup/restoration, and
 non-mutating validation/idempotency. `npm test` also validates the workflow
-contract and executes its SSH run block against fake local commands and synthetic
+contract for both push and manual events, including rejection of other refs,
+repositories and events and absence of path filters. It also executes the SSH run
+block against fake local commands and synthetic
 credentials: no tailnet join, SSH connection or deployment is made by those tests.
 A real switch/rollback is deliberately not exercised by these validations.
 
@@ -201,21 +217,29 @@ After securely adding the secret and verifying the first run, remove temporary
 handoff copies on both hosts. Rotate by installing a new restricted public key,
 updating the environment secret, verifying it, then removing the previous key.
 
-## First manual run (future owner action)
+## Automatic deployment and manual fallback
 
-1. Review/merge the PR into main, allow `CI / checks` to succeed on the resulting
-   exact main SHA, and complete environment configuration above.
-2. Run the root-only `--validate` preflight and inspect production health. Record
-   the active SHA and expected new main SHA; confirm no unintended schema change.
-3. In **Actions → Deploy production → Run workflow**, select **main**. There are
-   no deployment inputs. Approve the `production` environment after checks pass.
-   The ephemeral runner must join with `tag:github-dextech` and pass the action
-   ping gate before OpenSSH can contact DexServe over its tailnet address.
-4. If main advances while checks/approval run, this run fails closed; dispatch a
-   fresh run. Do not use “re-run” to deploy an old SHA or select another branch.
+1. Review and merge the automatic-deployment PR into main when ready. **That merge
+   itself triggers the first automatic deployment workflow** for the resulting
+   exact main SHA. No separate workflow dispatch or settings change is required.
+2. Every subsequent push to main uses the same complete tests, production audit
+   and protected environment. If environment approval is configured, review the
+   exact SHA and approve the run after checks pass. Automatic triggering does not
+   bypass approval or any other gate.
+3. The ephemeral runner joins with `tag:github-dextech` and passes the action ping
+   gate before native OpenSSH contacts `100.109.72.10:22` through `tailscale0`.
+   The server again requires fetched main to equal the tested SHA before switching.
+4. If main advances during checks or approval, the stale run fails closed. Use
+   the run for the newer main push. For manual recovery, choose **Actions → Deploy
+   production → Run workflow → main**; there are no deployment inputs. Do not
+   re-run an old SHA expecting it to deploy after main has moved.
 5. Confirm the run succeeds and inspect the sanitized server record. Independently
-   verify local/public health and SHA. A second dispatch of the same active SHA
-   exercises safe idempotency. No live rollback or workflow run was done in Phase 1.
+   verify local/public health and SHA. A manual dispatch for the already-active
+   current-main SHA verifies safe idempotency. Both triggers retain the same
+   backup, Calendar, log, rollback and evidence controls.
+
+Validation of this workflow change is isolated and does not merge, dispatch,
+deploy, modify production, change environment settings or join the tailnet.
 
 References: [GitHub environment controls](https://docs.github.com/en/actions/how-tos/deploy/configure-and-manage-deployments/control-deployments),
 [manual workflow trigger](https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/trigger-a-workflow),

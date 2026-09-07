@@ -4,6 +4,7 @@ const os = require('node:os');
 const path = require('node:path');
 const { spawnSync } = require('node:child_process');
 const { test } = require('node:test');
+const { runInNewContext } = require('node:vm');
 
 const source = fs.readFileSync(path.join(__dirname, '../.github/workflows/deploy-production.yml'), 'utf8');
 // Inspect the checked-in contract; actionlint separately validates full YAML syntax.
@@ -66,10 +67,13 @@ if (name === 'ssh') {
   }
 }
 
-test('deployment stays manual, main-only, environment protected and serialized', () => {
-  assert.match(source, /\non:\n  workflow_dispatch:\n\npermissions:\n  contents: read\n/);
+test('every main push and manual dispatch share the protected deployment path without path filters', () => {
+  assert.equal(source.split('\non:\n')[1].split('\npermissions:')[0],
+    '  push:\n    branches: [main]\n  workflow_dispatch:\n');
+  assert.doesNotMatch(source, /^\s*(?:paths|paths-ignore|branches-ignore):/m);
+  assert.match(source, /\npermissions:\n  contents: read\n/);
   assert.match(source, /group: dextech-production\n  cancel-in-progress: false/);
-  const guard = "if: github.repository == 'dexsword/dextech' && github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch'";
+  const guard = "if: github.repository == 'dexsword/dextech' && github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')";
   for (const job of [checks, deploy]) assert.ok(job.includes(guard));
   assert.match(deploy, /needs: checks/);
   assert.match(deploy, /environment: production/);
@@ -81,6 +85,26 @@ test('deployment stays manual, main-only, environment protected and serialized',
   assert.match(checks, /npm audit --omit=dev --audit-level=high/);
   assert.match(checks, /v.high !== 0 \|\| v.critical !== 0/);
   assert.match(checks, /git ls-remote https:\/\/github.com\/dexsword\/dextech.git refs\/heads\/main/);
+});
+
+test('both job guards accept only approved events on the canonical repository main ref', () => {
+  for (const job of [checks, deploy]) {
+    const expression = job.match(/^    if: (.+)$/m)[1];
+    for (const repository of ['dexsword/dextech', 'someone/dextech']) {
+      for (const ref of ['refs/heads/main', 'refs/heads/feature', 'refs/tags/main', 'refs/pull/1/merge']) {
+        for (const event_name of ['push', 'workflow_dispatch', 'pull_request', 'pull_request_target',
+          'workflow_run', 'repository_dispatch', 'schedule']) {
+          const github = { repository, ref, event_name };
+          const expected = repository === 'dexsword/dextech' && ref === 'refs/heads/main' &&
+            ['push', 'workflow_dispatch'].includes(event_name);
+          // These equality/boolean expressions have the same semantics in this
+          // synthetic matrix; no workflow, network or deployment is executed.
+          assert.equal(runInNewContext(expression, { github }, { timeout: 100 }), expected,
+            JSON.stringify(github));
+        }
+      }
+    }
+  }
 });
 
 test('only deploy receives OIDC permission and joins the single tagged ephemeral peer before SSH', () => {
