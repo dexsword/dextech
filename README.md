@@ -39,3 +39,11 @@ Set environment variables for email notifications:
 - `script.js` - JavaScript
 - `server.js` - Express backend
 - `bookings.json` - Booking data storage
+
+### Guarded pull-request auto-merge
+
+Phase 1 combines exact-head, read-only Codex review with deterministic eligibility
+and native GitHub squash auto-merge. Sensitive changes remain manual-only.
+[Setup, required checks, trust assumptions and first-run procedure](docs/guarded-auto-merge.md)
+include the required OpenAI key, branch protection and downstream deployment-event
+limitation. Repository settings and production are not changed by installing it.
