@@ -321,3 +321,60 @@ test('snapshot creates pending required checks on the PR head, with trusted run 
   assert.ok(writes.every(x => x.head_sha === head && x.status === 'in_progress' && x.external_id === `123:1:${head}`));
   assert.match(fs.readFileSync(path.join(dir, 'output'), 'utf8'), new RegExp(`head=${head}`));
 });
+
+test('both exact-head candidate checkouts fetch full history without tags or stored credentials', () => {
+  const workflow = fs.readFileSync(path.join(__dirname, '../.github/workflows/codex-review.yml'), 'utf8');
+  for (const job of ['eligibility', 'review']) {
+    const block = workflow.split(`\n  ${job}:\n`)[1].split(/\n  [a-z-]+:\n/)[0];
+    const steps = block.split(/\n      - /).filter(step => /path: candidate(?:\n|$)/.test(step));
+    assert.equal(steps.length, 1, `${job} must have exactly one candidate checkout`);
+    assert.match(steps[0], /uses: actions\/checkout@[a-f0-9]{40}/);
+    assert.match(steps[0], /^          ref: \$\{\{ needs\.snapshot\.outputs\.head \}\}$/m);
+    assert.match(steps[0], /^          fetch-depth: 0$/m);
+    assert.match(steps[0], /^          fetch-tags: false$/m);
+    assert.match(steps[0], /^          persist-credentials: false$/m);
+  }
+});
+
+test('full history fixes shallow exact-head ancestry while non-descendants still fail closed', t => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'dextech-review-ancestry-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const source = path.join(dir, 'source'), checkout = path.join(dir, 'checkout');
+  fs.mkdirSync(source);
+  const git = (cwd, ...args) => execFileSync('git', args, {
+    cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe']
+  }).trim();
+  git(source, 'init');
+  git(source, 'config', 'user.name', 'Fixture');
+  git(source, 'config', 'user.email', 'fixture@example.invalid');
+  const commit = content => {
+    fs.writeFileSync(path.join(source, 'script.js'), content);
+    git(source, 'add', '.'); git(source, 'commit', '-m', 'fixture');
+    return git(source, 'rev-parse', 'HEAD');
+  };
+  const root = commit('const version = 0;');
+  const trustedBase = commit('const version = 1;');
+  commit('const version = 2;');
+  const candidateHead = commit('const version = 3;');
+  // file:// makes Git honor --depth; every object remains a local test fixture.
+  const remote = require('node:url').pathToFileURL(source).href;
+  git(dir, 'clone', '--depth=1', '--no-tags', remote, checkout);
+  git(checkout, 'checkout', '--detach', candidateHead);
+  git(checkout, 'fetch', '--depth=1', '--no-tags', 'origin', trustedBase);
+  const match = { base: trustedBase, head: candidateHead };
+  assert.equal(git(checkout, 'rev-parse', 'HEAD'), candidateHead);
+  assert.equal(git(checkout, 'rev-parse', '--is-shallow-repository'), 'true');
+  // Merely possessing the base object does not repair the head's shallow boundary.
+  assert.throws(() => c.candidate(checkout, match), error => error.status === 1);
+  git(checkout, 'fetch', '--unshallow', '--no-tags', 'origin');
+  assert.equal(git(checkout, 'rev-parse', '--is-shallow-repository'), 'false');
+  assert.equal(git(checkout, 'rev-parse', 'HEAD'), candidateHead);
+  assert.deepEqual(c.candidate(checkout, match), ['script.js']);
+  assert.throws(() => c.candidate(checkout, { base: trustedBase, head: trustedBase }));
+
+  git(source, 'checkout', '--detach', root);
+  const nonDescendant = commit('const unrelated = true;');
+  assert.equal(git(source, 'rev-parse', '--is-shallow-repository'), 'false');
+  assert.throws(() => c.candidate(source, { base: trustedBase, head: nonDescendant }),
+    error => error.status === 1);
+});
