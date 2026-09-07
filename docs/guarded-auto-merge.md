@@ -76,9 +76,12 @@ authorization. It never copies CI results or creates a custom `checks` context.
    candidate/run ownership on every poll. It then independently validates review
    schema/confidence, eligibility, both pending checks and their ownership,
    current head/base/merge, native CI success, required-check source/placement,
-   repository auto-merge/squash settings, approvals, and resolved review threads.
+   repository auto-merge/squash settings, and the shape of human-review metadata.
    Immediately before mutation it re-reads the PR; GitHub's `expectedHeadOid`
-   atomically binds the native request to the reviewed head.
+   atomically binds the native request to the reviewed head. Required human
+   approvals, changes-requested reviews, and unresolved conversations remain held
+   by GitHub itself: enabling native auto-merge does not satisfy those requirements.
+   They can be satisfied later without another workflow event or model review.
 5. Request **native squash auto-merge while custom checks are pending**. Confirm
    the response and a fresh independent live read. Only then may `publish` release
    the custom checks, revalidating candidate, prerequisites, and run/check ownership
@@ -93,10 +96,13 @@ Per-PR concurrency has `cancel-in-progress: true`. Only opened, synchronize,
 reopened, ready-for-review, converted-to-draft, and closed events are automatic;
 there is no broad edited, status, check-run, or check-suite trigger. Updating the
 managed comment or checks cannot trigger another review. A rerun reclaims pending checks for the same candidate and changes their
-run/attempt ownership. Completed checks are superseded by fresh checks: live GitHub
-retained the old conclusion when asked to reset a completed check. Snapshot
-requires the API response to confirm pending state, null conclusion, and exact
-head/ownership before proceeding. Old runs,
+run/attempt ownership. Completed checks are superseded by fresh pending checks: live GitHub retained
+the old conclusion when asked to reset a completed check, and duplicate older
+failed names can remain required. After confirming a replacement is pending and
+owning it, snapshot renames obsolete custom checks with a fixed `superseded ID`
+suffix. Their historical conclusions are preserved. Native CI is never renamed
+or rewritten. Snapshot requires the API response to confirm pending state, null
+conclusion, and exact head/ownership before proceeding. Old runs,
 old receipts, cancelled attempts, and runs superseded by a newer same-PR run
 cannot authorize. Checks from an older source SHA never authorize a newer one.
 GitHub API reads and mutations are separate operations; repeated ownership and
@@ -158,7 +164,7 @@ merge. This test must not deploy production; production workflow dispatch remain
 a separately authorized action. No reusable merge token is introduced here.
 
 Fixed diagnostic categories include stale head/base, stale/unavailable merge,
-merge discovery timeout, required CI not successful, unresolved approval/thread,
+merge discovery timeout, required CI not successful, unexpected human-review metadata,
 superseded/cancelled run, permission/settings rejection, immediately mergeable,
 invalid review/eligibility, non-pending checks, unavailable auto-merge, and
 unexpected response. Raw API/error/model bodies and credentials are never logged.
@@ -218,7 +224,7 @@ and GitHub merged automatically at **10:29:20 UTC**, producing
 merge was used. No production/deployment workflow was triggered by these token-
 originated test merges. PR #17 remains for manual review; PR #13 was not changed.
 
-Final local validation: clean npm ci, **84 Node tests**, **9 deployment-control
+Final local validation: clean npm ci, **85 Node tests**, **9 deployment-control
 tests**, CI smoke and synthetic health, actionlint, ShellCheck, YAML, JSON Schema,
 TOML, JavaScript/Python/shell syntax, and production audit passed. All requested
 validators were available. Audit found zero high/critical findings; one existing
@@ -255,3 +261,13 @@ is reserved for application changes. All changed files remain complete before/af
 Git blobs; no patch is truncated, no candidate instructions become trusted, and
 no candidate scripts are executed. This improves relevance for large control
 reviews without changing the confidence threshold or authorization conditions.
+
+Human approval/thread readiness is deliberately not a prerequisite for requesting
+native auto-merge: [GitHub's native mechanism](https://docs.github.com/en/pull-requests/how-tos/merge-and-close-pull-requests/automatically-merging-a-pull-request)
+waits for all enforced reviews and checks before merging. The controller never
+approves a review, dismisses a blocking review, or resolves a thread. This avoids
+stranding a passing Codex review when a human approves or resolves a conversation
+later (neither event re-runs this workflow). Missing approvals and unresolved
+required conversations still block the actual merge under the enforcing ruleset;
+Codex failures, CI failures and stale candidates still cannot enable auto-merge.
+The live ruleset has no bypass actors.

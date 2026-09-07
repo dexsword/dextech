@@ -955,15 +955,14 @@ test('snapshot installs pending checks immediately and retries transient merge d
   }
 });
 
-test('live readiness requires native CI on HEAD, approvals, resolved discussions, and mergeability', async () => {
+test('live readiness requires native CI on HEAD, valid review metadata, and mergeability', async () => {
   const variants = [
     ['ci-failure', p => p.commits.nodes[0].commit.statusCheckRollup.contexts.nodes[0].conclusion = 'FAILURE'],
     ['ci-pending', p => p.commits.nodes[0].commit.statusCheckRollup.contexts.nodes[0].status = 'IN_PROGRESS'],
     ['missing-ci', p => p.commits.nodes[0].commit.statusCheckRollup.contexts.nodes.shift()],
     ['split-sha', p => p.potentialMergeCommit.statusCheckRollup = { contexts: { nodes: [{ __typename: 'CheckRun' }] } }],
-    ['missing-approval', p => p.reviewDecision = 'REVIEW_REQUIRED'],
-    ['changes-requested', p => p.reviewDecision = 'CHANGES_REQUESTED'],
-    ['unresolved-thread', p => p.reviewThreads.nodes.push({ isResolved: false })],
+    ['malformed-approval', p => p.reviewDecision = 'UNRECOGNIZED'],
+    ['malformed-thread', p => p.reviewThreads.nodes.push({ isResolved: 'false' })],
     ['draft', p => p.isDraft = true],
     ['closed', p => p.state = 'CLOSED'],
     ['conflict', p => p.mergeable = 'CONFLICTING'],
@@ -1051,21 +1050,32 @@ test('completed checks are superseded and a non-pending GitHub response stops sn
     GITHUB_SHA: base, GITHUB_REPOSITORY: p.REPOSITORY, GITHUB_EVENT_NAME: 'pull_request_target' };
   fs.writeFileSync(values.GITHUB_EVENT_PATH, JSON.stringify({ pull_request: pr() }));
   for (const returnedState of ['in_progress', 'completed']) {
-    const writes = [];
+    const writes = [], archived = [];
+    const created = {};
     const api = async (url, method, body) => {
       if (url.includes('/check-runs?')) return { total_count: 2, check_runs: ['gate', 'eligible'].map((kind, i) =>
         ({ ...check(kind), id: 11 + i, status: 'completed', conclusion: 'failure' })) };
       if (method === 'POST') {
         writes.push(body);
-        return { ...body, id: 101 + writes.length, status: returnedState,
+        const id = 101 + writes.length;
+        return created[id] = { ...body, id, status: returnedState,
           conclusion: returnedState === 'in_progress' ? null : 'failure' };
       }
-      assert.notEqual(method, 'PATCH', 'do not attempt to reset a completed GitHub check');
+      if (method === 'PATCH') {
+        assert.deepEqual(Object.keys(body), ['name'], 'preserve historical conclusions');
+        assert.ok(writes.length > archived.length, 'replacement is pending before old name changes');
+        const id = Number(url.split('/').pop());
+        archived.push(body);
+        return { ...body, id, head_sha: head, conclusion: 'failure' };
+      }
+      if (created[url.split('/').pop()]) return created[url.split('/').pop()];
       return mergeResponse(url) || pr();
     };
     if (returnedState === 'in_progress') {
       await c.snapshot(values, api);
       assert.equal(writes.length, 2);
+      assert.equal(archived.length, 2);
+      assert.ok(archived.every(c => /superseded/.test(c.name)));
     } else await assert.rejects(c.snapshot(values, api), error => c.diagnostic(error).includes('required-checks-not-pending'));
   }
 });
@@ -1122,4 +1132,28 @@ test('control review includes policy/schema dependencies as data and retains com
   assert.ok(packet.context.some(c => c.file === '.github/codex/review.schema.json'));
   assert.doesNotMatch(instructions, /UNTRUSTED_POLICY_TEXT/);
   assert.doesNotMatch(prompt, /UNRELATED_APPLICATION_TEXT/);
+});
+
+test('native auto-merge waits for enforced reviews and conversations without another workflow event', async t => {
+  for (const decision of ['REVIEW_REQUIRED', 'CHANGES_REQUESTED']) {
+    const mock = orderAPI();
+    const state = readiness().data.repository.pullRequest;
+    state.reviewDecision = decision;
+    state.reviewThreads.nodes = [{ isResolved: false }];
+    const api = async (url, method, body) => body?.query?.startsWith('query') ?
+      { data: { repository: { autoMergeAllowed: true, squashMergeAllowed: true, pullRequest: state } } } :
+      mock.api(url, method, body);
+    const confirmation = await c.requestAutoMerge(env(), api);
+    assert.ok(Object.values(mock.checks).every(c => c.status === 'in_progress'));
+    await c.publish(publicationEnv(t, confirmation), api);
+    assert.ok(Object.values(mock.checks).every(c => c.conclusion === 'success'));
+    // Only native enable was requested. GitHub retains the review/thread hold;
+    // controller code cannot clear it or issue an immediate merge.
+    const writes = mock.calls.filter(c => c.body?.query?.startsWith('mutation'));
+    assert.equal(writes.length, 1);
+    assert.match(writes[0].body.query, /enablePullRequestAutoMerge/);
+    assert.doesNotMatch(JSON.stringify(mock.calls), /mergePullRequest\(|resolveReviewThread|dismissPullRequestReview|addPullRequestReview/);
+    assert.equal(state.reviewDecision, decision);
+    assert.equal(state.reviewThreads.nodes[0].isResolved, false);
+  }
 });

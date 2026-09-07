@@ -20,7 +20,7 @@ const DIAGNOSTICS = Object.freeze({
   invalid: 'invalid-review-or-eligibility',
   pending: 'required-checks-not-pending',
   ci: 'required-ci-not-successful',
-  approval: 'approval-or-discussion-unresolved',
+  approval: 'unexpected-review-metadata',
   obsolete: 'superseded-or-cancelled-run'
 });
 class ControlFailure extends Error {
@@ -91,7 +91,7 @@ function binding(env, match) {
   return `${env.GITHUB_RUN_ID}:${env.GITHUB_RUN_ATTEMPT}:${match.head}:${match.merge}:${match.base}`;
 }
 
-// Retry readiness only before freezing the merge binding or creating any checks.
+// Retry readiness after disarming/pending checks, before freezing the merge binding.
 // Captured source/base identity never changes, including across retries.
 async function discoverMerge(api, match, sleep) {
   for (let attempt = 0; ; attempt++) {
@@ -148,15 +148,16 @@ async function snapshot(env, api, sleep = wait) {
   await revoke(pr, api);
   if (pr.state !== 'open') return output(env, { active: false });
   const ids = {};
-  const listed = await api(`/repos/${REPOSITORY}/commits/${match.head}/check-runs?per_page=100&filter=latest`);
+  const listed = await api(`/repos/${REPOSITORY}/commits/${match.head}/check-runs?per_page=100&filter=all`);
   if (!Array.isArray(listed.check_runs) || listed.total_count > 100) fail();
   for (const kind of ['gate', 'eligible']) {
     const live = await api(`/repos/${REPOSITORY}/pulls/${number}`);
     if (!policy.sameCandidate(live, match)) fail('stale');
     await activeRun(env, api, number);
     const existing = listed.check_runs.filter(c => c.name === CHECKS[kind] && c.app?.slug === 'github-actions');
-    if (existing.length > 1) fail('pending');
-    const check = existing[0]?.status === 'in_progress' && existing[0]?.conclusion === null ? existing[0] : null;
+    if (existing.some(c => !Number.isSafeInteger(c.id) || c.head_sha !== match.head)) fail();
+    const check = existing.filter(c => c.status === 'in_progress' && c.conclusion === null)
+      .sort((a, b) => b.id - a.id)[0];
     if (check && (!Number.isSafeInteger(check.id) || check.head_sha !== match.head)) fail();
     // Reclaim pending checks; supersede completed ones (GitHub retains their conclusion).
     // Changing ownership makes old receipts invalid.
@@ -171,6 +172,20 @@ async function snapshot(env, api, sleep = wait) {
     if (!Number.isSafeInteger(result.id) || result.status !== 'in_progress' || result.conclusion !== null ||
         result.head_sha !== match.head || result.external_id !== checkBinding(env, match)) fail('pending');
     ids[`${kind}_id`] = result.id;
+    // Duplicate completed names can remain required even when the latest passes.
+    // First confirm the replacement is pending; then preserve old results under
+    // historical names. Never rewrite a native CI check or manufacture success.
+    for (const old of existing.filter(c => c.id !== result.id)) {
+      if (!policy.sameCandidate(await api(`/repos/${REPOSITORY}/pulls/${number}`), match)) fail('stale');
+      await activeRun(env, api, number);
+      const pending = await api(`/repos/${REPOSITORY}/check-runs/${result.id}`);
+      if (pending.external_id !== checkBinding(env, match) || pending.head_sha !== match.head ||
+          pending.status !== 'in_progress' || pending.conclusion !== null) fail('pending');
+      const historical = await api(`/repos/${REPOSITORY}/check-runs/${old.id}`, 'PATCH',
+        { name: `${CHECKS[kind]} (superseded ${old.id})` });
+      if (historical.id !== old.id || historical.name !== `${CHECKS[kind]} (superseded ${old.id})` ||
+          historical.head_sha !== match.head || historical.conclusion !== old.conclusion) fail('pending');
+    }
   }
   match.merge = await discoverMerge(api, match, sleep);
   output(env, { active: true, draft: pr.draft,
@@ -434,8 +449,13 @@ async function requirements(env, api, match) {
       pr.potentialMergeCommit?.oid !== match.merge) fail('stale');
   if (pr.state !== 'OPEN' || pr.isDraft !== false) fail('inactive');
   if (pr.mergeable !== 'MERGEABLE') fail('merge');
-  if (![null, 'APPROVED'].includes(pr.reviewDecision) || pr.reviewThreads?.pageInfo?.hasNextPage !== false ||
-      !Array.isArray(pr.reviewThreads.nodes) || pr.reviewThreads.nodes.some(t => t.isResolved !== true)) fail('approval');
+  // Native auto-merge owns the wait for enforced human reviews/conversations.
+  // Requiring them here would strand a passing review when approval arrives
+  // later: those changes do not produce our pull_request_target events.
+  // Validate metadata, but never approve, dismiss, or resolve anything ourselves.
+  if (![null, 'APPROVED', 'REVIEW_REQUIRED', 'CHANGES_REQUESTED'].includes(pr.reviewDecision) ||
+      typeof pr.reviewThreads?.pageInfo?.hasNextPage !== 'boolean' ||
+      !Array.isArray(pr.reviewThreads.nodes) || pr.reviewThreads.nodes.some(t => typeof t.isResolved !== 'boolean')) fail('approval');
   // Never create a split or copy/spoof native CI onto another commit.
   const mergeContexts = pr.potentialMergeCommit.statusCheckRollup?.contexts?.nodes;
   if (mergeContexts && mergeContexts.length) fail('ci');
