@@ -64,3 +64,28 @@ test('homepage booking anchors and cancel route stay wired in index.html', () =>
     dom.window.close();
   }
 });
+
+test('support.html footer includes privacy, terms, and Express cancel route', () => {
+  const root = path.resolve(__dirname, '..');
+  const dom = new JSDOM(fs.readFileSync(path.join(root, 'support.html'), 'utf8'), {
+    url: 'https://dextech.invalid/support.html',
+  });
+  const { document } = dom.window;
+  try {
+    const footer = document.querySelector('footer.footer');
+    assert.ok(footer, 'Support page footer must exist');
+
+    const hrefs = Array.from(footer.querySelectorAll('a')).map(anchor => anchor.getAttribute('href'));
+    assert.ok(hrefs.includes('privacy.html'), 'Support footer must link to privacy.html');
+    assert.ok(hrefs.includes('terms.html'), 'Support footer must link to terms.html');
+    assert.ok(hrefs.includes('/cancel'), 'Support footer must link to /cancel');
+    assert.equal(footer.querySelectorAll('a[href="cancel.html"]').length, 0);
+
+    const github = footer.querySelector('a[href="https://github.com/dexsword"]');
+    assert.ok(github, 'Support footer must keep the GitHub link');
+    assert.equal(github.getAttribute('target'), '_blank');
+    assert.equal(github.getAttribute('rel'), 'noopener noreferrer');
+  } finally {
+    dom.window.close();
+  }
+});
