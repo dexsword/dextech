@@ -252,8 +252,8 @@ including feedback after the merge. Source was
 (`Auto Merge / eligible`), all on that source SHA and all successful.
 GitHub Actions enabled native SQUASH at **10:49:16 UTC** while the custom checks
 were still pending; GitHub automatically merged at **10:49:36 UTC** as
-`95d7244c06587e73d8c7a5d8ba4fc381af229392`. This is the final implementation's
-end-to-end validation, not a mock. The production workflow has no dispatch path.
+`95d7244c06587e73d8c7a5d8ba4fc381af229392`. This verified the base-only execution path; the final rerun/conversation test
+below additionally covers supersession and deferred human review holds. The production workflow has no dispatch path.
 
 Control-change review packets include their unchanged policy, output schema,
 configuration and CI dependencies as untrusted data. Unrelated application context
@@ -271,3 +271,36 @@ later (neither event re-runs this workflow). Missing approvals and unresolved
 required conversations still block the actual merge under the enforcing ruleset;
 Codex failures, CI failures and stale candidates still cannot enable auto-merge.
 The live ruleset has no bypass actors.
+
+
+The final implementation passed [run 34119147421](https://github.com/dexsword/dextech/actions/runs/34119147421)
+for [PR #21](https://github.com/dexsword/dextech/pull/21). All seven jobs succeeded.
+Source was `acb49fbc9249f964d6172cb09ae80b3133b546f0`, base
+`95d7244c06587e73d8c7a5d8ba4fc381af229392`, synthetic merge
+`e77408374267032340e7a2a4420e88ccffd59980`.
+
+| Required context | Check ID | Source SHA |
+| --- | --- | --- |
+| `checks` | 101732849296 | `acb49fbc9249f964d6172cb09ae80b3133b546f0` |
+| `Codex Review / gate` | 101733029156 | `acb49fbc9249f964d6172cb09ae80b3133b546f0` |
+| `Auto Merge / eligible` | 101733052101 | `acb49fbc9249f964d6172cb09ae80b3133b546f0` |
+
+This test exposed completed-check duplication: older failed custom checks remained
+`isRequired: true` alongside newer successful checks. The corrected snapshot first
+confirmed pending replacements, then preserved obsolete results under historical
+names. Live GraphQL confirmed those historical checks became non-required; only
+the current custom checks and native CI remained required. No native check was
+changed, no conclusion was fabricated, and no required context was removed.
+A low-confidence intermediate review also rejected authorization as designed;
+the disposable documentation wording was corrected before the final review.
+
+Native SQUASH was enabled at **11:57:23 UTC** while both custom checks were pending.
+By 11:57:47 all required checks passed, but GitHub still blocked merging on a
+clearly labelled, intentionally unresolved integration conversation. Only that
+test conversation was resolved by the maintainer; the workflow never resolves
+threads or approves/dismisses reviews. GitHub then merged automatically at
+**11:58:15 UTC**, producing `e47c53f7d370e672661fd3ea83e0ecf241bb0f62`, without
+another review run or a manual merge. This verifies the enforced conversation
+hold and release. Required approval count is currently zero, so nonzero human
+approval requirements rely on GitHub's documented native enforcement and local
+contract tests; no settings were changed to simulate them.
