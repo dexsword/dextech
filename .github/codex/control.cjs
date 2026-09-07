@@ -7,6 +7,7 @@ const { TextDecoder } = require('node:util');
 const policy = require('./policy.cjs');
 const { REPOSITORY, CHECKS, sha } = policy;
 const MAX_PROMPT = 600000;
+const FEEDBACK_MARKER = '<!-- dextech-codex-review-feedback:v1 -->';
 const fail = () => { throw new Error('Review control rejected the operation.'); };
 
 function expected(env) {
@@ -168,6 +169,63 @@ async function publish(env, api) {
   if (!passed || !classificationOK) fail();
 }
 
+function feedbackBody(result, match) {
+  // Schema/format validation cannot establish that free text is safe to disclose.
+  // Independent output allowlist: fixed prose, enum-derived counts, bounded
+  // numeric confidence and a validated snapshot SHA. No model text or locations.
+  if (!policy.validateSchema(result, require('./review.schema.json')) || !sha(match.head) ||
+      result.confidence < policy.CONFIDENCE) return null;
+  const header = `${FEEDBACK_MARKER}\n## Codex review feedback\n\n`;
+  const metadata = `**Reviewed head:** \`${match.head}\`  \n` +
+    `**Confidence:** ${result.confidence.toFixed(2)}\n\n`;
+  if (result.verdict === 'fail' && result.blocking_findings.length > 0) {
+    const counts = ['P0', 'P1', 'P2', 'P3'].map(severity =>
+      `${severity}: ${result.blocking_findings.filter(finding => finding.severity === severity).length}`);
+    return header + '**Status:** Changes requested  \n' + metadata +
+      `**Blocking findings:** ${counts.join(', ')}\n\n` +
+      'Model-supplied filenames, locations, explanations and summaries are withheld to prevent disclosure.\n\n' +
+      '_This feedback applies only to the exact head above. A new push requires a new review._';
+  }
+  if (result.verdict === 'pass' && result.blocking_findings.length === 0) {
+    return header + '**Status:** Resolved by a clean exact-head review  \n' + metadata +
+      'The latest schema-validated review found no blocking findings. Previous feedback is superseded.';
+  }
+  return null;
+}
+
+async function publishFeedback(env, api) {
+  const match = expected(env);
+  const result = policy.reviewResult(env.REVIEW_JSON, env.REVIEW_RESULT);
+  if (result === null) return; // Infrastructure/format failures stay in the failed check; never publish raw output.
+  const body = feedbackBody(result, match);
+  if (body === null) return;
+  const pr = await api(`/repos/${REPOSITORY}/pulls/${match.number}`);
+  if (!policy.sameCandidate(pr, match)) fail();
+  const comments = [];
+  // Search every page before creating a comment; incomplete lookup fails closed.
+  for (let page = 1; ; page++) {
+    if (page > 100) fail();
+    const batch = await api(`/repos/${REPOSITORY}/issues/${match.number}/comments?per_page=100&page=${page}`);
+    if (!Array.isArray(batch) || batch.length > 100) fail();
+    comments.push(...batch);
+    if (batch.length < 100) break;
+  }
+  const managed = comments.filter(comment => Number.isSafeInteger(comment.id) &&
+    comment.user?.login === 'github-actions[bot]' && comment.user?.type === 'Bot' &&
+    typeof comment.body === 'string' && comment.body.startsWith(FEEDBACK_MARKER));
+  if (managed.length > 1) fail();
+  if (managed.length === 0 && result.verdict === 'pass') return;
+  // Recheck the exact head immediately before the only write. Comment writes
+  // have no atomic SHA precondition; the body always labels the reviewed head.
+  const current = await api(`/repos/${REPOSITORY}/pulls/${match.number}`);
+  if (!policy.sameCandidate(current, match)) fail();
+  if (managed.length === 1) {
+    await api(`/repos/${REPOSITORY}/issues/comments/${managed[0].id}`, 'PATCH', { body });
+  } else {
+    await api(`/repos/${REPOSITORY}/issues/${match.number}/comments`, 'POST', { body });
+  }
+}
+
 // A previously enabled request can survive a new push. Revoke it BEFORE any
 // successful final checks, including when the new change is now ineligible.
 // This fresh job has no model output, candidate checkout, or API key.
@@ -217,6 +275,7 @@ async function main(env) {
     case 'classify': return output(env, classifyCandidate(path.resolve('candidate'), expected(env)));
     case 'prepare': return prepare(path.resolve('candidate'), expected(env), env);
     case 'publish': return publish(env, client(env));
+    case 'feedback': return publishFeedback(env, client(env));
     case 'disarm': return disarmAutoMerge(env, client(env));
     case 'request': return requestAutoMerge(env, client(env));
     default: fail();
@@ -228,4 +287,5 @@ if (require.main === module) main(process.env).catch(() => {
   process.exitCode = 1;
 });
 
-module.exports = { expected, client, snapshot, candidate, readBlob, classifyCandidate, prepare, publish, disarmAutoMerge, requestAutoMerge };
+module.exports = { expected, client, snapshot, candidate, readBlob, classifyCandidate, prepare,
+  publish, feedbackBody, publishFeedback, disarmAutoMerge, requestAutoMerge };
