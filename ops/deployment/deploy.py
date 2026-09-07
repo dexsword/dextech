@@ -197,7 +197,7 @@ def gates(sha, *, since, wait_refresh=True):
             and 'pid=' + str(pid) + ',' in sockets[0])
     require(str(DB) in [os.readlink(p) for p in Path('/proc/' + str(pid) + '/fd').iterdir()])
     http('https://dextech.cloud/health', sha)
-    for path in ['/', '/support.html', '/admin']:
+    for path in ['/', '/support.html', '/admin', '/cancel']:
         http('https://dextech.cloud' + path)
     require(properties('apache2.service')['ActiveState'] == 'active')
     run(['apache2ctl', 'configtest'])
