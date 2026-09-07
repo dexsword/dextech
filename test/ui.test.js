@@ -34,3 +34,33 @@ test('existing support-page UI suite passes without network access', async t => 
   assert.ok(result.total > 0, 'Existing suite must execute assertions');
   assert.equal(result.passed, result.total);
 });
+
+test('homepage booking anchors and cancel route stay wired in index.html', () => {
+  const root = path.resolve(__dirname, '..');
+  const dom = new JSDOM(fs.readFileSync(path.join(root, 'index.html'), 'utf8'), {
+    url: 'https://dextech.invalid/',
+  });
+  const { document } = dom.window;
+  try {
+    const logo = document.querySelector('header a.logo');
+    assert.ok(logo, 'Homepage logo must exist');
+    assert.equal(logo.getAttribute('href'), '#home');
+
+    const booking = document.getElementById('booking');
+    const widget = document.getElementById('bookingWidget');
+    assert.ok(booking, 'Booking target id="booking" must exist');
+    assert.ok(widget, 'Booking widget must exist');
+    assert.ok(booking.contains(widget), 'id="booking" must wrap the booking widget');
+
+    const supportNav = document.querySelector('nav[aria-label="Support navigation"]');
+    assert.ok(supportNav, 'Support footer nav must exist');
+    const cancelLink = Array.from(supportNav.querySelectorAll('a')).find(anchor => (
+      anchor.getAttribute('href') === '/cancel' || /cancel/i.test(anchor.textContent)
+    ));
+    assert.ok(cancelLink, 'Support footer must include a cancel entry');
+    assert.equal(cancelLink.getAttribute('href'), '/cancel');
+    assert.equal(document.querySelectorAll('a[href="cancel.html"]').length, 0);
+  } finally {
+    dom.window.close();
+  }
+});
