@@ -13,13 +13,13 @@ const c = { ...control, requestAutoMerge: (env, api, appApi = api) => control.re
 const schema = require('../.github/codex/review.schema.json');
 const base = 'a'.repeat(40), head = 'b'.repeat(40), merge = 'e'.repeat(40);
 const expected = { number: 12, base, head, merge };
-const pr = () => ({ number: 12, node_id: 'PR_fixture', state: 'open', draft: false, mergeable: true, merge_commit_sha: merge,
+const pr = () => ({ auto_merge: null, number: 12, node_id: 'PR_fixture', state: 'open', draft: false, mergeable: true, merge_commit_sha: merge,
   base: { repo: { full_name: 'dexsword/dextech' }, ref: 'main', sha: base },
   head: { repo: { full_name: 'dexsword/dextech' }, sha: head } });
 const clean = () => ({ verdict: 'pass', confidence: 0.97, blocking_findings: [], summary: 'Correct patch.' });
-const env = () => ({ MERGE_APP_SLUG: 'dextech-merge', HEAD_SHA: head, BASE_SHA: base, MERGE_SHA: merge, PR_NUMBER: '12', GITHUB_RUN_ID: '123',
+const env = () => ({ LEGACY_CHECKS: 'true', SNAPSHOT_RESULT: 'success', SNAPSHOT_ACTIVE: 'true', PR_DRAFT: 'false', MERGE_APP_SLUG: 'dextech-merge', HEAD_SHA: head, BASE_SHA: base, MERGE_SHA: merge, PR_NUMBER: '12', GITHUB_RUN_ID: '123',
   GITHUB_RUN_ATTEMPT: '1', GATE_ID: '101', ELIGIBLE_ID: '102', ELIGIBLE: 'true',
-  AUTO_MERGE_RESULT: 'skipped', DISARM_RESULT: 'success', ELIGIBILITY_RESULT: 'success', REVIEW_RESULT: 'success', REVIEW_JSON: JSON.stringify(clean()) });
+  AUTO_MERGE_RESULT: 'success', REQUEST_RESULT: 'skipped', DISARM_RESULT: 'success', ELIGIBILITY_RESULT: 'success', REVIEW_RESULT: 'success', REVIEW_JSON: JSON.stringify(clean()) });
 const check = kind => ({ name: p.CHECKS[kind], head_sha: head, external_id: `dextech:12:123:1:${head}:${base}`,
   app: { slug: 'github-actions' }, status: 'in_progress', conclusion: null });
 
@@ -31,15 +31,31 @@ function readiness(current = pr()) {
     isDraft: current.draft, mergeable: 'MERGEABLE', reviewDecision: null,
     reviewThreads: { pageInfo: { hasNextPage: false }, nodes: [] },
     commits: { nodes: [{ commit: { oid: head, statusCheckRollup: { contexts: {
-      pageInfo: { hasNextPage: false }, nodes: [native, ...Object.values(p.CHECKS).map(name =>
+      pageInfo: { hasNextPage: false }, nodes: [native, { ...native, name: p.NATIVE_GATE, databaseId: 103, status: 'IN_PROGRESS', conclusion: null, isRequired: false }, ...Object.values(p.CHECKS).map(name =>
         ({ ...native, name, status: 'IN_PROGRESS', conclusion: null }))]
     } } } }] }, potentialMergeCommit: { oid: merge, statusCheckRollup: null }
   } } } };
 }
 
+function configuredRules(native = false, legacy = true) {
+  return [{ type: 'required_status_checks', parameters: { strict_required_status_checks_policy: true,
+    required_status_checks: ['checks', ...(native ? [p.NATIVE_GATE] : []), ...(legacy ? Object.values(p.CHECKS) : [])]
+      .map(context => ({ context, integration_id: 15368 })) } }];
+}
+function gateJob() {
+  return { name: p.NATIVE_GATE, run_id: 123, run_attempt: 1, head_sha: head, status: 'in_progress', conclusion: null,
+    check_run_url: 'https://api.github.com/repos/dexsword/dextech/check-runs/103' };
+}
+function nativeCheck() {
+  return { id: 103, name: p.NATIVE_GATE, head_sha: head, status: 'in_progress', conclusion: null,
+    app: { id: 15368, slug: 'github-actions' }, check_suite: { id: 99 } };
+}
 function mergeResponse(endpoint) {
+  if (endpoint.endsWith('/rules/branches/main')) return configuredRules();
+  if (endpoint.endsWith('/attempts/1/jobs?per_page=100')) return { total_count: 1, jobs: [gateJob()] };
+  if (endpoint.endsWith('/check-runs/103')) return nativeCheck();
   if (endpoint.includes('/actions/workflows/')) return { workflow_runs: [{ id: 123, display_title: 'Codex review PR #12' }] };
-  if (endpoint.endsWith('/actions/runs/123')) return { status: 'in_progress', run_attempt: 1, path: '.github/workflows/codex-review.yml' };
+  if (endpoint.endsWith('/actions/runs/123')) return { status: 'in_progress', run_attempt: 1, check_suite_id: 99, path: '.github/workflows/codex-review.yml' };
   if (endpoint.includes('/check-runs?')) return { total_count: 0, check_runs: [] };
   if (endpoint.endsWith('/git/ref/heads/main')) return { object: { sha: base } };
   if (endpoint.endsWith('/git/ref/pull/12/merge')) return { ref: 'refs/pull/12/merge', object: { type: 'commit', sha: merge } };
@@ -347,8 +363,8 @@ test('workflow trust boundaries, final Codex step, pins and self-exclusion remai
   assert.match(afterCodex, /output-schema-file:.*control\/\.github\/codex/);
   assert.equal(p.classify(['.github/workflows/codex-review.yml']).eligible, false);
   assert.match(workflow, /needs\.review\.result == 'success'/);
-  assert.match(workflow, /needs\.eligibility\.outputs\.eligible == 'true'/);
-  assert.match(workflow, /needs\.snapshot\.outputs\.draft == 'false'/);
+  assert.match(workflow, /ELIGIBLE: \$\{\{ needs\.eligibility\.outputs\.eligible \}\}/);
+  assert.match(workflow, /PR_DRAFT: \$\{\{ needs\.snapshot\.outputs\.draft \}\}/);
   const feedback = workflow.split('\n  feedback:')[1].split('\n  auto-merge:')[0];
   assert.match(feedback, /needs: \[snapshot, review, publish\]/);
   assert.match(feedback, /permissions:\n      contents: read\n      pull-requests: write\n/);
@@ -720,7 +736,7 @@ test('wrong method or head in GitHub mutation result fails confirmation', async 
 test('eligible drafts retain manual review behavior without requesting auto-merge', async t => {
   const current = pr(); current.draft = true;
   const mock = orderAPI({ current });
-  await c.publish({ ...publicationEnv(t), AUTO_MERGE_RESULT: 'skipped', PR_DRAFT: 'true' }, mock.api);
+  await c.publish({ ...publicationEnv(t), AUTO_MERGE_RESULT: 'success', REQUEST_RESULT: 'skipped', PR_DRAFT: 'true' }, mock.api);
   assert.ok(Object.values(mock.checks).every(x => x.conclusion === 'success'));
   assert.equal(mock.calls.some(x => x.body?.query?.startsWith('mutation')), false);
 });
@@ -1348,7 +1364,7 @@ test('only the separate trusted final job receives the scoped, revocable App tok
   assert.match(job, /MERGE_APP_TOKEN: \$\{\{ steps.merge-app.outputs.token \}\}/);
   assert.match(job, /MERGE_APP_SLUG: \$\{\{ steps.merge-app.outputs.app-slug \}\}/);
   assert.match(job, /GH_TOKEN: \$\{\{ github.token \}\}/);
-  assert.match(job, /ref: \$\{\{ needs.snapshot.outputs.base \}\}/);
+  assert.match(job, /ref: \$\{\{ github.sha \}\}/);
   assert.match(job, /permissions:\n      actions: read\n      contents: read\n      pull-requests: read\n      checks: read/);
 });
 
@@ -1404,4 +1420,225 @@ test('revocation requires independent absence and the same head/base after mutat
     await assert.rejects(c.disarmAutoMerge(env(), api));
     assert.equal(mutated, true);
   }
+});
+
+function nativeAPI({ current = pr(), legacy = false } = {}) {
+  const mock = orderAPI({ current });
+  const api = async (url, method, body) => {
+    if (url.endsWith('/rules/branches/main')) return configuredRules(true, legacy);
+    if (body?.query?.startsWith('query')) {
+      const response = await mock.api(url, method, body);
+      const contexts = response.data.repository.pullRequest.commits.nodes[0].commit.statusCheckRollup.contexts;
+      contexts.nodes = contexts.nodes.filter(c => legacy || !Object.values(p.CHECKS).includes(c.name));
+      contexts.nodes.find(c => c.name === p.NATIVE_GATE).isRequired = true;
+      return response;
+    }
+    return mock.api(url, method, body);
+  };
+  return { ...mock, api };
+}
+const nativeEnv = () => ({ ...env(), LEGACY_CHECKS: 'false' });
+
+test('native gate rejects failed, cancelled, skipped or missing prerequisites before any API or token access', async () => {
+  for (const key of ['SNAPSHOT_RESULT', 'DISARM_RESULT', 'ELIGIBILITY_RESULT', 'REVIEW_RESULT']) {
+    for (const value of ['failure', 'cancelled', 'skipped', '', undefined]) {
+      await assert.rejects(c.prepareNativeGate({ ...nativeEnv(), [key]: value }, () => assert.fail('Unexpected API access')));
+    }
+  }
+  for (const override of [{ SNAPSHOT_ACTIVE: 'false' }, { ELIGIBLE: '' }, { PR_DRAFT: '' },
+    { REVIEW_JSON: '{bad' }, { REVIEW_JSON: JSON.stringify({ ...clean(), confidence: 0.94 }) },
+    { REVIEW_JSON: JSON.stringify({ ...clean(), verdict: 'fail' }) }]) {
+    await assert.rejects(c.prepareNativeGate({ ...nativeEnv(), ...override }, () => assert.fail('Unexpected API access')));
+  }
+});
+
+test('native-only gate confirms eligible auto-merge without creating, updating or requiring custom checks', async t => {
+  const mock = nativeAPI();
+  assert.deepEqual(await c.prepareNativeGate(nativeEnv(), mock.api), { request: true });
+  const receipt = await c.requestAutoMerge(nativeEnv(), mock.api);
+  assert.deepEqual(await c.finishNativeGate({ ...publicationEnv(t, receipt), ...nativeEnv(),
+    REQUEST_RESULT: 'success' }, mock.api), { passed: true });
+  assert.equal(mock.calls.filter(c => c.body?.query?.startsWith('mutation')).length, 1);
+  assert.equal(mock.calls.some(c => /check-runs\/10[12]$/.test(c.endpoint)), false);
+  assert.equal(mock.calls.some(c => ['POST', 'PATCH'].includes(c.method) && c.endpoint !== '/graphql'), false);
+  assert.equal(mock.calls.some(c => c.body?.conclusion), false, 'Only GitHub completes the native gate');
+});
+
+test('native gate passes clean protected changes and drafts without requesting auto-merge', async () => {
+  for (const overrides of [{ ELIGIBLE: 'false' }, { PR_DRAFT: 'true' }]) {
+    const current = pr(); current.draft = overrides.PR_DRAFT === 'true';
+    const mock = nativeAPI({ current });
+    const values = { ...nativeEnv(), ...overrides, REQUEST_RESULT: 'skipped' };
+    assert.deepEqual(await c.prepareNativeGate(values, mock.api), { request: false });
+    assert.deepEqual(await c.finishNativeGate(values, mock.api), { passed: true });
+    assert.equal(mock.calls.some(c => c.body?.query?.startsWith('mutation')), false);
+    await assert.rejects(c.finishNativeGate({ ...values, REQUEST_RESULT: 'success' }, mock.api));
+    const armed = nativeAPI({ current: { ...current, auto_merge: { merge_method: 'squash' } } });
+    await assert.rejects(c.prepareNativeGate(values, armed.api));
+  }
+});
+
+test('native finalization rejects missing confirmation, failed CI, changed candidates and cancelled runs', async t => {
+  const mock = nativeAPI();
+  const receipt = await c.requestAutoMerge(nativeEnv(), mock.api);
+  const values = { ...publicationEnv(t, receipt), ...nativeEnv(), REQUEST_RESULT: 'success' };
+  for (const override of [{ REQUEST_RESULT: 'skipped' }, { REQUEST_RESULT: 'failure' },
+    { CONFIRMED_HEAD: base }, { CONFIRMED_BASE: head }, { CONFIRMED_MERGE: head },
+    { CONFIRMED_RUN: `123:0:${head}:${merge}:${base}` }, { CONFIRMED_APP: '' }]) {
+    await assert.rejects(c.finishNativeGate({ ...values, ...override }, mock.api));
+  }
+  const transforms = [
+    (url, value) => url.endsWith('/pulls/12') ? { ...value, head: { ...value.head, sha: base } } : value,
+    (url, value) => url.endsWith('/pulls/12') ? { ...value, auto_merge: null } : value,
+    (url, value) => url.endsWith('/git/ref/heads/main') ? { object: { sha: head } } : value,
+    (url, value) => url.endsWith('/actions/runs/123') ? { ...value, status: 'completed', conclusion: 'cancelled' } : value,
+    (url, value) => {
+      if (value.data?.repository?.pullRequest) {
+        value.data.repository.pullRequest.commits.nodes[0].commit.statusCheckRollup.contexts.nodes[0].conclusion = 'FAILURE';
+      }
+      return value;
+    }
+  ];
+  for (const transform of transforms) {
+    await assert.rejects(c.finishNativeGate(values, async (url, ...args) => transform(url, await mock.api(url, ...args))));
+  }
+});
+
+test('native gate requires the running check in the current run attempt and suite', async () => {
+  const cases = [
+    (url, x) => url.includes('/attempts/') ? { total_count: 0, jobs: [] } : x,
+    (url, x) => url.includes('/attempts/') ? { total_count: 2, jobs: [gateJob(), gateJob()] } : x,
+    (url, x) => url.includes('/attempts/') ? { ...x, total_count: 101 } : x,
+    ...[{ run_id: 122 }, { run_attempt: 2 }, { head_sha: base }, { conclusion: 'success', status: 'completed' },
+      { check_run_url: 'https://evil.invalid/check-runs/103' }].map(change =>
+      (url, x) => url.includes('/attempts/') ? { total_count: 1, jobs: [{ ...gateJob(), ...change }] } : x),
+    ...[{ check_suite: { id: 98 } }, { head_sha: base }, { name: 'other' }, { app: { id: 1, slug: 'other' } },
+      { status: 'completed', conclusion: 'success' }, { status: 'completed', conclusion: 'skipped' }].map(change =>
+      (url, x) => url.endsWith('/check-runs/103') ? { ...x, ...change } : x)
+  ];
+  for (const transform of cases) {
+    const mock = nativeAPI();
+    await assert.rejects(c.prepareNativeGate(nativeEnv(), async (url, ...args) => transform(url, await mock.api(url, ...args))));
+    assert.equal(mock.calls.some(c => c.body?.query?.startsWith('mutation')), false);
+  }
+});
+
+test('rerun on the same SHA ignores older gate successes and binds the current native check', async () => {
+  const mock = nativeAPI();
+  const api = async (url, ...args) => {
+    const value = await mock.api(url, ...args);
+    if (value.data?.repository?.pullRequest) {
+      const contexts = value.data.repository.pullRequest.commits.nodes[0].commit.statusCheckRollup.contexts;
+      contexts.nodes.unshift({ ...contexts.nodes.find(c => c.name === p.NATIVE_GATE), databaseId: 102,
+        status: 'COMPLETED', conclusion: 'SUCCESS' });
+    }
+    return value;
+  };
+  assert.deepEqual(await c.prepareNativeGate(nativeEnv(), api), { request: true });
+  await assert.rejects(c.prepareNativeGate(nativeEnv(), async (url, ...args) => {
+    const value = await api(url, ...args);
+    if (url.endsWith('/check-runs/103')) return { ...value, status: 'completed', conclusion: 'failure' };
+    return value;
+  }));
+  await assert.rejects(c.prepareNativeGate(nativeEnv(), async (url, ...args) => {
+    const value = await api(url, ...args);
+    if (value.data?.repository?.pullRequest) {
+      const contexts = value.data.repository.pullRequest.commits.nodes[0].commit.statusCheckRollup.contexts;
+      contexts.nodes = contexts.nodes.filter(c => c.databaseId !== 103);
+    }
+    return value;
+  }));
+});
+
+test('ruleset migration accepts legacy, combined and native configurations but rejects incomplete protection', async () => {
+  for (const [native, legacy] of [[false, true], [true, true], [true, false]]) {
+    assert.deepEqual(await c.gateConfiguration(async () => configuredRules(native, legacy)), { native, legacy });
+  }
+  const invalid = [[], configuredRules(false, false),
+    [{ type: 'required_status_checks', parameters: { strict_required_status_checks_policy: false,
+      required_status_checks: configuredRules(true, false)[0].parameters.required_status_checks } }],
+    [{ type: 'required_status_checks', parameters: { strict_required_status_checks_policy: true,
+      required_status_checks: [{ context: 'checks', integration_id: 15368 }, { context: p.CHECKS.gate, integration_id: 15368 }] } }]];
+  for (const rules of invalid) await assert.rejects(c.gateConfiguration(async () => rules));
+  const wrongSource = configuredRules(true, false);
+  wrongSource[0].parameters.required_status_checks[1].integration_id = 1;
+  await assert.rejects(c.gateConfiguration(async () => wrongSource));
+  await assert.rejects(c.prepareNativeGate({ ...nativeEnv(), LEGACY_CHECKS: 'true' }, nativeAPI().api));
+  const bridge = nativeAPI({ legacy: true });
+  assert.deepEqual(await c.prepareNativeGate(env(), bridge.api), { request: true });
+});
+
+test('native-only snapshot stops creating and renaming legacy check runs', async t => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'dextech-native-snapshot-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  fs.writeFileSync(path.join(dir, 'event.json'), JSON.stringify({ pull_request: pr() }));
+  const values = { ...nativeEnv(), GITHUB_EVENT_PATH: path.join(dir, 'event.json'),
+    GITHUB_OUTPUT: path.join(dir, 'output'), GITHUB_SHA: base,
+    GITHUB_REPOSITORY: 'dexsword/dextech', GITHUB_EVENT_NAME: 'pull_request_target' };
+  await c.snapshot(values, async (url, method = 'GET') => {
+    assert.equal(method, 'GET');
+    assert.doesNotMatch(url, /check-runs/);
+    if (url.endsWith('/rules/branches/main')) return configuredRules(true, false);
+    return mergeResponse(url) || pr();
+  });
+  const output = fs.readFileSync(values.GITHUB_OUTPUT, 'utf8');
+  assert.match(output, /legacy=false/);
+  assert.doesNotMatch(output, /gate_id|eligible_id/);
+});
+
+test('native gate runs after upstream failure, reserves its name, and mints credentials only after validation', () => {
+  const workflow = fs.readFileSync(path.join(__dirname, '../.github/workflows/codex-review.yml'), 'utf8');
+  const job = workflow.split('\n  auto-merge:\n')[1];
+  const condition = job.split('    if: >-\n')[1].split('    needs:')[0];
+  assert.match(condition, /always\(\)/);
+  assert.doesNotMatch(condition, /needs\./);
+  assert.match(job, /'Inactive PR event' \|\| 'merge-gate'/);
+  assert.equal((job.match(/if: steps.gate.outputs.request == 'true'/g) || []).length, 2);
+  assert.ok(job.indexOf('control.cjs gate-prepare') < job.indexOf('actions/create-github-app-token@'));
+  assert.ok(job.indexOf('control.cjs request') < job.indexOf('control.cjs gate-finish'));
+  assert.match(job, /REQUEST_RESULT: \$\{\{ steps.request.outcome \}\}/);
+  assert.doesNotMatch(job.split('Finish the native gate')[1], /MERGE_APP_TOKEN|steps.merge-app.outputs.token/);
+  assert.match(workflow.split('\n  publish:\n')[1].split('\n  feedback:\n')[0], /outputs.legacy == 'true'/);
+});
+
+test('a second workflow attempt uses its own native check and confirmation on the same source SHA', async t => {
+  const mock = nativeAPI();
+  const values = { ...nativeEnv(), GITHUB_RUN_ATTEMPT: '2' };
+  const api = async (url, ...args) => {
+    if (url.endsWith('/attempts/2/jobs?per_page=100')) return { total_count: 1, jobs: [{ ...gateJob(),
+      run_attempt: 2, check_run_url: 'https://api.github.com/repos/dexsword/dextech/check-runs/104' }] };
+    if (url.endsWith('/check-runs/104')) return { ...nativeCheck(), id: 104 };
+    const value = await mock.api(url, ...args);
+    if (url.endsWith('/actions/runs/123')) value.run_attempt = 2;
+    if (value.data?.repository?.pullRequest) {
+      const contexts = value.data.repository.pullRequest.commits.nodes[0].commit.statusCheckRollup.contexts;
+      const old = contexts.nodes.find(c => c.name === p.NATIVE_GATE);
+      contexts.nodes.push({ ...old, databaseId: 104 });
+      Object.assign(old, { status: 'COMPLETED', conclusion: 'SUCCESS' });
+    }
+    return value;
+  };
+  assert.deepEqual(await c.prepareNativeGate(values, api), { request: true });
+  const receipt = await c.requestAutoMerge(values, api);
+  assert.equal(receipt.confirmed_run, `123:2:${head}:${merge}:${base}`);
+  assert.deepEqual(await c.finishNativeGate({ ...publicationEnv(t, receipt), ...values, REQUEST_RESULT: 'success' }, api), { passed: true });
+  assert.equal(mock.calls.some(c => c.endpoint.endsWith('/check-runs/103')), false);
+});
+
+test('compatibility publication accepts the completed native gate only after successful authorization', async t => {
+  const mock = nativeAPI({ legacy: true });
+  const receipt = await c.requestAutoMerge(env(), mock.api);
+  const api = async (url, ...args) => {
+    const value = await mock.api(url, ...args);
+    if (url.includes('/attempts/')) Object.assign(value.jobs[0], { status: 'completed', conclusion: 'success' });
+    if (url.endsWith('/check-runs/103')) Object.assign(value, { status: 'completed', conclusion: 'success' });
+    if (value.data?.repository?.pullRequest) {
+      Object.assign(value.data.repository.pullRequest.commits.nodes[0].commit.statusCheckRollup.contexts.nodes.find(c => c.name === p.NATIVE_GATE),
+        { status: 'COMPLETED', conclusion: 'SUCCESS' });
+    }
+    return value;
+  };
+  await c.publish({ ...publicationEnv(t, receipt), REQUEST_RESULT: 'success' }, api);
+  assert.ok(Object.values(mock.checks).every(c => c.conclusion === 'success'));
+  await assert.rejects(c.prepareNativeGate(env(), api));
 });

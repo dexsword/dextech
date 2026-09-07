@@ -40,6 +40,7 @@ jobs:
       number: ${{ steps.snapshot.outputs.number }}
       gate_id: ${{ steps.snapshot.outputs.gate_id }}
       eligible_id: ${{ steps.snapshot.outputs.eligible_id }}
+      legacy: ${{ steps.snapshot.outputs.legacy }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
@@ -153,7 +154,8 @@ jobs:
         run: node control/.github/codex/control.cjs disarm
 
   publish:
-    if: ${{ always() && needs.snapshot.result == 'success' && needs.snapshot.outputs.active == 'true' }}
+    # Migration only: automatically stops once the legacy requirements are removed.
+    if: ${{ always() && needs.snapshot.result == 'success' && needs.snapshot.outputs.active == 'true' && needs.snapshot.outputs.legacy == 'true' }}
     needs: [snapshot, eligibility, review, disarm, auto-merge]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
@@ -187,6 +189,8 @@ jobs:
           ELIGIBLE: ${{ needs.eligibility.outputs.eligible }}
           PR_DRAFT: ${{ needs.snapshot.outputs.draft }}
           AUTO_MERGE_RESULT: ${{ needs.auto-merge.result }}
+          REQUEST_RESULT: ${{ needs.auto-merge.outputs.request_result }}
+          LEGACY_CHECKS: ${{ needs.snapshot.outputs.legacy }}
           CONFIRMED_HEAD: ${{ needs.auto-merge.outputs.confirmed_head }}
           CONFIRMED_MERGE: ${{ needs.auto-merge.outputs.confirmed_merge }}
           CONFIRMED_BASE: ${{ needs.auto-merge.outputs.confirmed_base }}
@@ -220,11 +224,12 @@ jobs:
         run: node control/.github/codex/control.cjs feedback
 
   auto-merge:
+    # A failed/skipped prerequisite must produce a failed required gate.
+    # Ignored events use another name so a skipped job cannot satisfy this gate.
+    name: ${{ (github.event.action == 'closed' || (github.event.action == 'edited' && !github.event.changes.base.ref.from)) && 'Inactive PR event' || 'merge-gate' }}
     if: >-
-      always() && needs.snapshot.result == 'success' && needs.snapshot.outputs.active == 'true' &&
-      needs.disarm.result == 'success' && needs.review.result == 'success' &&
-      needs.eligibility.result == 'success' && needs.eligibility.outputs.eligible == 'true' &&
-      needs.snapshot.outputs.draft == 'false'
+      always() && github.event.action != 'closed' &&
+      (github.event.action != 'edited' || github.event.changes.base.ref.from)
     needs: [snapshot, disarm, eligibility, review]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
@@ -239,15 +244,36 @@ jobs:
       confirmed_base: ${{ steps.request.outputs.confirmed_base }}
       confirmed_run: ${{ steps.request.outputs.confirmed_run }}
       confirmed_app: ${{ steps.request.outputs.confirmed_app }}
+      request_result: ${{ steps.request.outcome }}
+    env:
+      GH_TOKEN: ${{ github.token }}
+      HEAD_SHA: ${{ needs.snapshot.outputs.head }}
+      MERGE_SHA: ${{ needs.snapshot.outputs.merge }}
+      BASE_SHA: ${{ needs.snapshot.outputs.base }}
+      PR_NUMBER: ${{ github.event.pull_request.number }}
+      SNAPSHOT_RESULT: ${{ needs.snapshot.result }}
+      SNAPSHOT_ACTIVE: ${{ needs.snapshot.outputs.active }}
+      PR_DRAFT: ${{ needs.snapshot.outputs.draft }}
+      DISARM_RESULT: ${{ needs.disarm.result }}
+      ELIGIBILITY_RESULT: ${{ needs.eligibility.result }}
+      ELIGIBLE: ${{ needs.eligibility.outputs.eligible }}
+      REVIEW_RESULT: ${{ needs.review.result }}
+      REVIEW_JSON: ${{ needs.review.outputs.result }}
+      LEGACY_CHECKS: ${{ needs.snapshot.outputs.legacy }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
-          ref: ${{ needs.snapshot.outputs.base }}
+          # Available even if snapshot failed; always the trusted event base.
+          ref: ${{ github.sha }}
           persist-credentials: false
           path: control
+      - name: Validate prerequisites and the current native gate
+        id: gate
+        run: node control/.github/codex/control.cjs gate-prepare
       # Only this trusted final job gets App credentials. Scope the token to
       # this repository and these two permissions; retain post-job revocation.
       - name: Create scoped merge App token
+        if: steps.gate.outputs.request == 'true'
         id: merge-app
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
         with:
@@ -257,21 +283,21 @@ jobs:
           repositories: dextech
           permission-contents: write
           permission-pull-requests: write
-      - name: Request and confirm native squash auto-merge while checks are pending
+      - name: Request and confirm native squash auto-merge while merge-gate is running
+        if: steps.gate.outputs.request == 'true'
         id: request
         env:
-          GH_TOKEN: ${{ github.token }}
           MERGE_APP_TOKEN: ${{ steps.merge-app.outputs.token }}
           MERGE_APP_SLUG: ${{ steps.merge-app.outputs.app-slug }}
-          HEAD_SHA: ${{ needs.snapshot.outputs.head }}
-          MERGE_SHA: ${{ needs.snapshot.outputs.merge }}
-          BASE_SHA: ${{ needs.snapshot.outputs.base }}
-          PR_NUMBER: ${{ needs.snapshot.outputs.number }}
           GATE_ID: ${{ needs.snapshot.outputs.gate_id }}
           ELIGIBLE_ID: ${{ needs.snapshot.outputs.eligible_id }}
-          REVIEW_JSON: ${{ needs.review.outputs.result }}
-          REVIEW_RESULT: ${{ needs.review.result }}
-          DISARM_RESULT: ${{ needs.disarm.result }}
-          ELIGIBILITY_RESULT: ${{ needs.eligibility.result }}
-          ELIGIBLE: ${{ needs.eligibility.outputs.eligible }}
         run: node control/.github/codex/control.cjs request
+      - name: Finish the native gate after independent confirmation
+        env:
+          REQUEST_RESULT: ${{ steps.request.outcome }}
+          CONFIRMED_HEAD: ${{ steps.request.outputs.confirmed_head }}
+          CONFIRMED_BASE: ${{ steps.request.outputs.confirmed_base }}
+          CONFIRMED_MERGE: ${{ steps.request.outputs.confirmed_merge }}
+          CONFIRMED_RUN: ${{ steps.request.outputs.confirmed_run }}
+          CONFIRMED_APP: ${{ steps.request.outputs.confirmed_app }}
+        run: node control/.github/codex/control.cjs gate-finish
