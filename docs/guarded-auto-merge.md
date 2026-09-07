@@ -460,3 +460,14 @@ GitHub-hosted verification before installation. That one-time step is scoped to
 same-repository PR #23; future application CI does not depend on retention of these
 historical runs. The standalone command remains available for operator diagnosis.
 The check receives no tokens or secrets and prints only a fixed pass/fail message.
+
+Cross-actor revocation was also exercised live: the App installation probe run
+34153250579 queued PR #23's native request, and GitHub's PR timeline records
+`github-actions[bot]` disabling it at 18:55:30 UTC on the next head. The installation
+CI regression now verifies this public event against that completed probe.
+The controller additionally requires an independent PR read after every revoke:
+the request must be explicitly null and the PR ID, source head, and base must
+still match. A permission error, surviving request, missing field, or changed
+candidate fails the disarm job and cannot publish a successful gate. This does
+not add App credentials to snapshot/disarm or prevent a separately authorized
+maintainer from queuing native merge for an ineligible installation after disarm.

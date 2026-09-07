@@ -388,6 +388,10 @@ async function revoke(pr, api) {
     variables: { id: pr.node_id }
   });
   if (result.data?.disablePullRequestAutoMerge?.pullRequest?.id !== pr.node_id) fail();
+  // Do not trust the mutation receipt alone, including across App ownership.
+  const live = await api(`/repos/${REPOSITORY}/pulls/${pr.number}`);
+  if (live.node_id !== pr.node_id || live.head?.sha !== pr.head?.sha ||
+      live.base?.sha !== pr.base?.sha || live.auto_merge !== null) fail('stale');
 }
 
 async function disarmAutoMerge(env, api) {

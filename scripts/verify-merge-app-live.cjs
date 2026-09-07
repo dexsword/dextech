@@ -43,6 +43,12 @@ async function main() {
     s.name.includes('create-github-app-token') && s.conclusion === 'success'));
   // The native queue survived token cleanup and the conversation hold.
   assert.ok(Date.parse(jobs[0].completed_at) < Date.parse(pr.merged_at));
+  const installationProbe = await read('actions/runs/34153250579');
+  assert.equal(installationProbe.conclusion, 'success');
+  const events = await read('issues/23/timeline?per_page=100');
+  assert.ok(events.some(e => e.event === 'auto_merge_disabled' &&
+    e.actor?.login === 'github-actions[bot]' && e.created_at === '2026-09-07T18:55:30Z' &&
+    Date.parse(e.created_at) > Date.parse(installationProbe.updated_at)));
   const deploy = await read('actions/runs/34152935927');
   assert.equal(deploy.path, '.github/workflows/deploy-production.yml');
   assert.equal(deploy.event, 'push');
@@ -53,7 +59,7 @@ async function main() {
   }
   // This verifies triggering, not deployment acceptance: the first deployment
   // correctly failed its server disk-space gate. Never disguise that failure.
-  console.log('PASS: real App squash merge, required HEAD checks, token cleanup, stale-run cancellation and production push trigger.');
+  console.log('PASS: real App squash merge, required HEAD checks, token cleanup, cross-actor revocation, stale-run cancellation and production push trigger.');
 }
 main().catch(() => {
   console.error('Live merge-App verification failed; response and exception details withheld.');

@@ -366,12 +366,14 @@ test('workflow trust boundaries, final Codex step, pins and self-exclusion remai
 test('previous native auto-merge is disabled before publishing eligibility/gate results', async () => {
   const current = { ...pr(), auto_merge: { merge_method: 'squash', enabled_by: { login: 'dextech-merge[bot]' } } };
   const calls = [];
+  let disabled = false;
   await c.disarmAutoMerge(env(), async (endpoint, method, body) => {
     calls.push({ endpoint, method, body });
-    if (endpoint.endsWith('/pulls/12')) return current;
+    if (endpoint.endsWith('/pulls/12')) return disabled ? { ...current, auto_merge: null } : current;
+    disabled = true;
     return { data: { disablePullRequestAutoMerge: { pullRequest: { id: current.node_id } } } };
   });
-  assert.equal(calls.length, 2);
+  assert.equal(calls.length, 3);
   assert.match(calls[1].body.query, /disablePullRequestAutoMerge/);
   assert.doesNotMatch(calls[1].body.query, /enablePullRequestAutoMerge|expectedHeadOid/);
   const workflow = fs.readFileSync(path.join(__dirname, '../.github/workflows/codex-review.yml'), 'utf8');
@@ -1376,5 +1378,30 @@ test('publisher requires the App identity in the trusted request receipt', async
     const confirmation = await c.requestAutoMerge(env(), mock.api);
     await assert.rejects(c.publish({ ...publicationEnv(t, confirmation), CONFIRMED_APP: identity }, mock.api));
     assert.equal(mock.calls.some(call => call.body?.conclusion === 'success'), false);
+  }
+});
+
+
+test('revocation requires independent absence and the same head/base after mutation', async () => {
+  for (const variant of ['surviving-request', 'missing-field', 'changed-head', 'changed-base', 'changed-id']) {
+    const current = { ...pr(), auto_merge: { merge_method: 'squash', enabled_by: { login: 'dextech-merge[bot]' } } };
+    let mutated = false;
+    const api = async (endpoint) => {
+      if (endpoint === '/graphql') {
+        mutated = true;
+        return { data: { disablePullRequestAutoMerge: { pullRequest: { id: current.node_id } } } };
+      }
+      if (!mutated) return current;
+      const live = structuredClone(current);
+      live.auto_merge = null;
+      if (variant === 'surviving-request') live.auto_merge = current.auto_merge;
+      if (variant === 'missing-field') delete live.auto_merge;
+      if (variant === 'changed-head') live.head.sha = base;
+      if (variant === 'changed-base') live.base.sha = head;
+      if (variant === 'changed-id') live.node_id = 'different';
+      return live;
+    };
+    await assert.rejects(c.disarmAutoMerge(env(), api));
+    assert.equal(mutated, true);
   }
 });
