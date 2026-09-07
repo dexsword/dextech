@@ -132,19 +132,17 @@ async function activeRun(env, api, number = env.PR_NUMBER) {
 async function snapshot(env, api, sleep = wait) {
   const event = JSON.parse(fs.readFileSync(env.GITHUB_EVENT_PATH, 'utf8'));
   if (env.GITHUB_REPOSITORY !== REPOSITORY) fail();
-  const manual = env.GITHUB_EVENT_NAME === 'workflow_dispatch';
-  if (!manual && env.GITHUB_EVENT_NAME !== 'pull_request_target') fail();
-  if (!manual && !policy.sameCandidate({ ...event.pull_request, state: 'open' },
+  if (env.GITHUB_EVENT_NAME !== 'pull_request_target') fail();
+  if (!policy.sameCandidate({ ...event.pull_request, state: 'open' },
       { number: event.pull_request?.number, head: event.pull_request?.head?.sha, base: env.GITHUB_SHA })) fail();
-  if (manual && !/^[1-9][0-9]*$/.test(event.inputs?.pr)) fail();
-  const number = manual ? Number(event.inputs?.pr) : event.pull_request?.number;
+  const number = event.pull_request?.number;
   if (!Number.isSafeInteger(number) || number < 1) fail();
   const pr = await api(`/repos/${REPOSITORY}/pulls/${number}`);
   const main = await api(`/repos/${REPOSITORY}/git/ref/heads/main`);
-  const match = { number, head: manual ? pr.head?.sha : event.pull_request?.head?.sha, base: main.object?.sha };
+  const match = { number, head: event.pull_request?.head?.sha, base: main.object?.sha };
   if (!sha(match.head) || !sha(match.base) ||
       !policy.sameCandidate({ ...pr, state: 'open' }, match)) fail('stale');
-  if (!manual && env.GITHUB_SHA !== match.base) fail('stale');
+  if (env.GITHUB_SHA !== match.base) fail('stale');
   await activeRun(env, api, number);
   // Invalidate BEFORE waiting on CI, merge-ref availability, or model review.
   await revoke(pr, api);
@@ -175,7 +173,7 @@ async function snapshot(env, api, sleep = wait) {
     ids[`${kind}_id`] = result.id;
   }
   match.merge = await discoverMerge(api, match, sleep);
-  output(env, { active: true, control: env.GITHUB_SHA, draft: pr.draft,
+  output(env, { active: true, draft: pr.draft,
     head: match.head, base: match.base, merge: match.merge, number, ...ids });
 }
 

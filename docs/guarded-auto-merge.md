@@ -129,28 +129,29 @@ This hotfix is itself protected/ineligible and cannot auto-merge.
 
 ## Maintainer validation and recovery
 
-`workflow_dispatch` accepts only a canonical PR number. A maintainer explicitly
-selects the **trusted workflow ref**; the immutable triggering SHA supplies control
-code to every privileged job. The input selects PR data, never executable code or
-a control SHA. Use main normally. Before installation, a maintainer can select the
-reviewed hotfix branch to test that exact implementation against a disposable
-same-repository PR targeting main. This is an explicit trust decision: never
-select an unreviewed contributor branch. Dispatch requires repository write
-access; no public PR event can select this override. API-key access retains the
-live same-repository guard. Main and candidate ancestry remain independently
-validated even when the selected control revision is the hotfix.
+Automatic review accepts only base-controlled `pull_request_target` events. There
+is no production `workflow_dispatch` override and no input selecting executable
+control code. Jobs that inspect run ownership explicitly declare `actions: read`;
+the reviewer retains only `contents: read`. For a recovery run, use GitHub's rerun
+UI on the trusted base-controlled workflow or push a fresh candidate commit.
+
+Before installation, an isolated maintainer-owned push harness can execute vetted
+control code against a fixed disposable PR. Its adapter reads live PR metadata,
+constructs the equivalent base-controlled event, and explicitly checks out the
+vetted harness commit in control jobs. Candidate files remain data only. This
+adapter is not part of the production workflow or PR diff. Never select arbitrary
+contributor code for such a harness.
 
 For a first live test, push a harmless documentation commit to a disposable branch
-from current main and open a PR. Let native CI start normally. Dispatch the vetted
-control ref with that PR number; its matching concurrency group replaces any old
-base-controlled review. Record head/base/merge and run IDs. Push a second harmless
-commit to verify stale-run cancellation, then dispatch the vetted control again.
-Check that only the intended CI and review runs started, every required check is
-on the latest head and marked required, the old run cannot authorize, native
-squash is enabled before check success, and GitHub merges without intervention.
-Do not manually publish checks, bypass requirements, or merge PR #17 to test it.
-After installing the tested hotfix, synchronize PR #13 with current main for a
-fresh automatic evaluation; that synchronization is a separate operation.
+from current main and open a PR. Let native CI start normally. Use the isolated
+vetted harness with that fixed PR number; its matching concurrency group replaces
+any old base-controlled review. Record head/base/merge and run IDs. Push a second
+harmless commit to verify stale-run cancellation, then trigger the harness again.
+Check that all required checks belong to the latest head and are marked required,
+the old run cannot authorize, native squash is enabled before check success, and
+GitHub merges without intervention. Do not manually publish checks or bypass
+requirements. After installing the tested hotfix, synchronize PR #13 with current
+main for a fresh automatic evaluation; that is a separate operation.
 
 The default GITHUB_TOKEN suppresses downstream workflow events caused by its
 merge. This test must not deploy production; production workflow dispatch remains
@@ -217,7 +218,7 @@ and GitHub merged automatically at **10:29:20 UTC**, producing
 merge was used. No production/deployment workflow was triggered by these token-
 originated test merges. PR #17 remains for manual review; PR #13 was not changed.
 
-Final local validation: clean npm ci, **82 Node tests**, **9 deployment-control
+Final local validation: clean npm ci, **83 Node tests**, **9 deployment-control
 tests**, CI smoke and synthetic health, actionlint, ShellCheck, YAML, JSON Schema,
 TOML, JavaScript/Python/shell syntax, and production audit passed. All requested
 validators were available. Audit found zero high/critical findings; one existing
@@ -226,3 +227,24 @@ automatic execution, exact source/merge/base binding, separate read-only reviewe
 and write jobs, no candidate execution with write credentials, no secret-bearing
 logs, and no check/approval bypass. GitHub's separate reads and writes remain
 non-atomic; exact-head mutation binding and branch protections are still required.
+
+The hotfix's own review also required explicit `actions: read` on snapshot,
+publish and auto-merge (their run-ownership REST reads), and removal of the
+permanent dispatch override. Both were corrected. The production workflow now
+accepts only `pull_request_target` from main, with no alternate control-ref input.
+The isolated test adapter alone synthesizes the trusted event for pre-installation
+validation; it is never merged into production.
+
+The final base-only version (with explicit Actions read permissions) passed
+[run 34113271843](https://github.com/dexsword/dextech/actions/runs/34113271843) for
+[PR #20](https://github.com/dexsword/dextech/pull/20). All seven jobs succeeded,
+including feedback after the merge. Source was
+`f104872fc30022cfb24d2789b4070680ee222ceb`, base
+`a7902a4b9676bb01af48ab8109d2df3e2a1dcfe7`, synthetic merge
+`ba9bc3871eaf49e1be6a04cd9d09d6ec6beaffdc`. Check IDs were `101714136509`
+(`checks`), `101714201415` (`Codex Review / gate`), and `101714211384`
+(`Auto Merge / eligible`), all on that source SHA and all successful.
+GitHub Actions enabled native SQUASH at **10:49:16 UTC** while the custom checks
+were still pending; GitHub automatically merged at **10:49:36 UTC** as
+`95d7244c06587e73d8c7a5d8ba4fc381af229392`. This is the final implementation's
+end-to-end validation, not a mock. The production workflow has no dispatch path.

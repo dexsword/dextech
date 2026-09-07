@@ -1034,13 +1034,13 @@ test('reruns reclaim existing pending head checks and close/reopen disarms witho
   assert.match(fs.readFileSync(values.GITHUB_OUTPUT, 'utf8'), /active=false/);
 });
 
-test('workflow avoids recursive and irrelevant events and separates manual trust from PR input', () => {
+test('workflow avoids recursive and irrelevant events and admits only base-controlled PR events', () => {
   const workflow = fs.readFileSync(path.join(__dirname, '../.github/workflows/codex-review.yml'), 'utf8');
   assert.doesNotMatch(workflow, /\bedited\b|\bcheck_run:|\bcheck_suite:|\bstatus:/);
   assert.match(workflow, /cancel-in-progress: true/);
   assert.match(workflow, /converted_to_draft, closed/);
-  assert.match(workflow, /workflow_dispatch:/);
-  assert.match(workflow, /ref: \$\{\{ needs.snapshot.outputs.control \}\}/);
+  assert.doesNotMatch(workflow, /workflow_dispatch:/);
+  assert.match(workflow, /ref: \$\{\{ needs.snapshot.outputs.base \}\}/);
   assert.doesNotMatch(workflow, /ref: \$\{\{ inputs\./);
 });
 
@@ -1083,4 +1083,18 @@ test('feedback is a safe no-op when auto-merge closes the PR before or during co
     });
     assert.equal(reads, closeAt);
   }
+});
+
+
+test('run-ownership API consumers declare Actions read; reviewer cannot write or override base control', () => {
+  const workflow = fs.readFileSync(path.join(__dirname, '../.github/workflows/codex-review.yml'), 'utf8');
+  for (const name of ['snapshot', 'publish', 'auto-merge']) {
+    const job = workflow.split(`\n  ${name}:`)[1].split(/\n  [a-z][a-z-]*:/)[0];
+    assert.match(job, /permissions:\n      actions: read/);
+    assert.doesNotMatch(job, /actions: write/);
+  }
+  const review = workflow.split('\n  review:')[1].split('\n  disarm:')[0];
+  assert.match(review, /permissions:\n      contents: read/);
+  assert.doesNotMatch(review, /actions:|contents: write|pull-requests:/);
+  assert.doesNotMatch(workflow, /inputs\.|workflow_dispatch/);
 });
