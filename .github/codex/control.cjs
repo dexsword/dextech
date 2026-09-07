@@ -18,7 +18,10 @@ const DIAGNOSTICS = Object.freeze({
   unavailable: 'auto-merge-unavailable',
   unexpected: 'unexpected-github-response',
   invalid: 'invalid-review-or-eligibility',
-  pending: 'required-checks-not-pending'
+  pending: 'required-checks-not-pending',
+  ci: 'required-ci-not-successful',
+  approval: 'approval-or-discussion-unresolved',
+  obsolete: 'superseded-or-cancelled-run'
 });
 class ControlFailure extends Error {
   constructor(category) { super('Review control rejected the operation.'); this.category = category; }
@@ -70,6 +73,7 @@ function client(env, fetcher = fetch) {
       redirect: 'error', signal: AbortSignal.timeout(20000)
     });
     // Never log response bodies, exception text, headers or credential values.
+    if ([502, 503, 504].includes(response.status)) throw new MergePending();
     if ([401, 403].includes(response.status)) fail('permission');
     if (response.status === 404) {
       if (method === 'GET' && /^\/repos\/dexsword\/dextech\/git\/(?:ref\/pull\/[1-9][0-9]*\/merge|commits\/[a-f0-9]{40})$/.test(endpoint)) throw new MergePending();
@@ -111,26 +115,66 @@ async function discoverMerge(api, match, sleep) {
   }
 }
 
+function checkBinding(env, match) {
+  if (!/^\d+$/.test(env.GITHUB_RUN_ID) || !/^\d+$/.test(env.GITHUB_RUN_ATTEMPT)) fail();
+  return `dextech:${match.number}:${env.GITHUB_RUN_ID}:${env.GITHUB_RUN_ATTEMPT}:${match.head}:${match.base}`;
+}
+
+async function activeRun(env, api, number = env.PR_NUMBER) {
+  const run = await api(`/repos/${REPOSITORY}/actions/runs/${env.GITHUB_RUN_ID}`);
+  if (run.status !== 'in_progress' || String(run.run_attempt) !== env.GITHUB_RUN_ATTEMPT ||
+      run.path !== '.github/workflows/codex-review.yml') fail('obsolete');
+  const runs = await api(`/repos/${REPOSITORY}/actions/workflows/codex-review.yml/runs?per_page=100`);
+  if (!Array.isArray(runs.workflow_runs) || !runs.workflow_runs.some(r => String(r.id) === env.GITHUB_RUN_ID) ||
+      runs.workflow_runs.some(r => r.display_title === `Codex review PR #${number}` && r.id > Number(env.GITHUB_RUN_ID))) fail('obsolete');
+}
+
 async function snapshot(env, api, sleep = wait) {
   const event = JSON.parse(fs.readFileSync(env.GITHUB_EVENT_PATH, 'utf8'));
-  const pr = event.pull_request;
-  const match = { number: pr?.number, head: pr?.head?.sha, base: env.GITHUB_SHA };
-  if (env.GITHUB_REPOSITORY !== REPOSITORY || env.GITHUB_EVENT_NAME !== 'pull_request_target' ||
-      !Number.isSafeInteger(match.number) || !policy.sameCandidate(pr, match)) fail();
-  match.merge = await discoverMerge(api, match, sleep);
+  if (env.GITHUB_REPOSITORY !== REPOSITORY) fail();
+  const manual = env.GITHUB_EVENT_NAME === 'workflow_dispatch';
+  if (!manual && env.GITHUB_EVENT_NAME !== 'pull_request_target') fail();
+  if (!manual && !policy.sameCandidate({ ...event.pull_request, state: 'open' },
+      { number: event.pull_request?.number, head: event.pull_request?.head?.sha, base: env.GITHUB_SHA })) fail();
+  if (manual && !/^[1-9][0-9]*$/.test(event.inputs?.pr)) fail();
+  const number = manual ? Number(event.inputs?.pr) : event.pull_request?.number;
+  if (!Number.isSafeInteger(number) || number < 1) fail();
+  const pr = await api(`/repos/${REPOSITORY}/pulls/${number}`);
+  const main = await api(`/repos/${REPOSITORY}/git/ref/heads/main`);
+  const match = { number, head: manual ? pr.head?.sha : event.pull_request?.head?.sha, base: main.object?.sha };
+  if (!sha(match.head) || !sha(match.base) ||
+      !policy.sameCandidate({ ...pr, state: 'open' }, match)) fail('stale');
+  if (!manual && env.GITHUB_SHA !== match.base) fail('stale');
+  await activeRun(env, api, number);
+  // Invalidate BEFORE waiting on CI, merge-ref availability, or model review.
+  await revoke(pr, api);
+  if (pr.state !== 'open') return output(env, { active: false });
   const ids = {};
+  const listed = await api(`/repos/${REPOSITORY}/commits/${match.head}/check-runs?per_page=100&filter=latest`);
+  if (!Array.isArray(listed.check_runs) || listed.total_count > 100) fail();
   for (const kind of ['gate', 'eligible']) {
-    const check = await api(`/repos/${REPOSITORY}/check-runs`, 'POST', {
-      name: CHECKS[kind], head_sha: match.merge, status: 'in_progress',
-      external_id: binding(env, match),
+    const live = await api(`/repos/${REPOSITORY}/pulls/${number}`);
+    if (!policy.sameCandidate(live, match)) fail('stale');
+    await activeRun(env, api, number);
+    const existing = listed.check_runs.filter(c => c.name === CHECKS[kind] && c.app?.slug === 'github-actions');
+    if (existing.length > 1) fail('pending');
+    const check = existing[0];
+    if (check && (!Number.isSafeInteger(check.id) || check.head_sha !== match.head)) fail();
+    // Reclaim the same check on a rerun. Changing ownership makes old receipts invalid.
+    const body = { name: CHECKS[kind], status: 'in_progress',
+      external_id: checkBinding(env, match),
       details_url: `https://github.com/${REPOSITORY}/actions/runs/${env.GITHUB_RUN_ID}`,
-      output: { title: 'Trusted base policy is evaluating this head and merge candidate',
-        summary: 'Missing, failed, cancelled, or incomplete review cannot authorize auto-merge.' }
-    });
-    if (!Number.isSafeInteger(check.id)) fail();
-    ids[`${kind}_id`] = check.id;
+      output: { title: 'Trusted review pending for this exact source head',
+        summary: 'Incomplete review, CI, or authorization cannot enable guarded merging.' } };
+    if (!check) body.head_sha = match.head;
+    const result = await api(check ? `/repos/${REPOSITORY}/check-runs/${check.id}` :
+      `/repos/${REPOSITORY}/check-runs`, check ? 'PATCH' : 'POST', body);
+    if (!Number.isSafeInteger(result.id)) fail();
+    ids[`${kind}_id`] = result.id;
   }
-  output(env, { head: match.head, base: match.base, merge: match.merge, number: match.number, ...ids });
+  match.merge = await discoverMerge(api, match, sleep);
+  output(env, { active: true, control: env.GITHUB_SHA, draft: pr.draft,
+    head: match.head, base: match.base, merge: match.merge, number, ...ids });
 }
 
 function git(cwd, args) {
@@ -225,9 +269,14 @@ async function publish(env, api) {
     const conclusion = kind === 'gate' ? (passed ? 'success' : 'failure') :
       (classificationOK && !eligible ? 'neutral' : (passed ? 'success' : 'failure'));
     // Revalidate both bindings before EACH result, including between writes.
+    if (passed && !manual) await requirements(env, api, match);
     const live = await currentCandidate(api, match);
     if (passed && !manual && (live.draft !== false || live.auto_merge?.merge_method !== 'squash')) fail('unavailable');
     if (passed && manual && eligible && live.draft !== true) fail('inactive');
+    await activeRun(env, api);
+    const owned = await api(`/repos/${REPOSITORY}/check-runs/${ids[kind]}`);
+    if (owned.external_id !== checkBinding(env, match) || owned.head_sha !== match.head ||
+        owned.status !== 'in_progress') fail('obsolete');
     await api(`/repos/${REPOSITORY}/check-runs/${ids[kind]}`, 'PATCH', {
       status: 'completed', conclusion,
       output: { title: kind === 'gate' ? (passed ? 'Review passed' : 'Review failed closed') :
@@ -301,10 +350,8 @@ async function publishFeedback(env, api) {
 // A previously enabled request can survive a new push. Revoke it BEFORE any
 // successful final checks, including when the new change is now ineligible.
 // This fresh job has no model output, candidate checkout, or API key.
-async function disarmAutoMerge(env, api) {
-  const match = expected(env);
-  const pr = await api(`/repos/${REPOSITORY}/pulls/${match.number}`);
-  if (!policy.sameCandidate(pr, match) || typeof pr.node_id !== 'string') fail();
+async function revoke(pr, api) {
+  if (typeof pr.node_id !== 'string') fail();
   if (!pr.auto_merge) return;
   const result = await api('/graphql', 'POST', {
     query: 'mutation($id: ID!) { disablePullRequestAutoMerge(input: {pullRequestId: $id}) { pullRequest { id } } }',
@@ -313,14 +360,22 @@ async function disarmAutoMerge(env, api) {
   if (result.data?.disablePullRequestAutoMerge?.pullRequest?.id !== pr.node_id) fail();
 }
 
+async function disarmAutoMerge(env, api) {
+  const match = expected(env);
+  const pr = await api(`/repos/${REPOSITORY}/pulls/${match.number}`);
+  if (!policy.sameCandidate(pr, match)) fail();
+  await revoke(pr, api);
+}
+
 async function pendingChecks(env, api, match) {
+  await activeRun(env, api);
   const ids = {};
   for (const kind of ['gate', 'eligible']) {
     const id = env[kind === 'gate' ? 'GATE_ID' : 'ELIGIBLE_ID'];
     if (!/^[1-9][0-9]*$/.test(id)) fail();
     const check = await api(`/repos/${REPOSITORY}/check-runs/${id}`);
-    if (check.name !== CHECKS[kind] || check.head_sha !== match.merge ||
-        check.external_id !== binding(env, match) || check.app?.slug !== 'github-actions') fail('stale');
+    if (check.name !== CHECKS[kind] || check.head_sha !== match.head ||
+        check.external_id !== checkBinding(env, match) || check.app?.slug !== 'github-actions') fail('stale');
     if (check.status !== 'in_progress' || check.conclusion !== null) fail('pending');
     ids[kind] = id;
   }
@@ -347,11 +402,71 @@ async function currentCandidate(api, match, ready = false, discovering = false) 
   return pr;
 }
 
+async function requirements(env, api, match) {
+  const result = await api('/graphql', 'POST', {
+    query: `query($number: Int!) { repository(owner: "dexsword", name: "dextech") {
+      autoMergeAllowed squashMergeAllowed pullRequest(number: $number) {
+        headRefOid baseRefOid state isDraft mergeable reviewDecision
+        reviewThreads(first: 100) { pageInfo { hasNextPage } nodes { isResolved } }
+        commits(last: 1) { nodes { commit { oid statusCheckRollup { contexts(first: 100) {
+          pageInfo { hasNextPage } nodes {
+            ... on CheckRun { name status conclusion isRequired(pullRequestNumber: $number)
+              checkSuite { app { databaseId slug } } }
+            ... on StatusContext { context state isRequired(pullRequestNumber: $number) }
+          }
+        } } } } }
+        potentialMergeCommit { oid statusCheckRollup { contexts(first: 1) { nodes { __typename } } } }
+      }
+    } }`, variables: { number: match.number }
+  });
+  const repository = result.data?.repository, pr = repository?.pullRequest;
+  if (repository?.autoMergeAllowed !== true || repository.squashMergeAllowed !== true) fail('permission');
+  if (pr?.headRefOid !== match.head || pr.baseRefOid !== match.base ||
+      pr.potentialMergeCommit?.oid !== match.merge) fail('stale');
+  if (pr.state !== 'OPEN' || pr.isDraft !== false) fail('inactive');
+  if (pr.mergeable !== 'MERGEABLE') fail('merge');
+  if (![null, 'APPROVED'].includes(pr.reviewDecision) || pr.reviewThreads?.pageInfo?.hasNextPage !== false ||
+      !Array.isArray(pr.reviewThreads.nodes) || pr.reviewThreads.nodes.some(t => t.isResolved !== true)) fail('approval');
+  // Never create a split or copy/spoof native CI onto another commit.
+  const mergeContexts = pr.potentialMergeCommit.statusCheckRollup?.contexts?.nodes;
+  if (mergeContexts && mergeContexts.length) fail('ci');
+  const commit = pr.commits?.nodes?.[0]?.commit;
+  const contexts = commit?.statusCheckRollup?.contexts;
+  if (commit?.oid !== match.head || contexts?.pageInfo?.hasNextPage !== false || !Array.isArray(contexts.nodes)) fail('ci');
+  const required = contexts.nodes.filter(c => c.isRequired === true);
+  for (const name of ['checks', CHECKS.gate, CHECKS.eligible]) {
+    const found = required.filter(c => c.name === name && c.checkSuite?.app?.slug === 'github-actions' &&
+      c.checkSuite.app.databaseId === 15368);
+    if (found.length !== 1) fail('ci');
+    if (name === 'checks' && (found[0].status !== 'COMPLETED' || found[0].conclusion !== 'SUCCESS')) fail('ci');
+  }
+  if (required.some(c => !Object.values(CHECKS).includes(c.name) &&
+      !(c.status === 'COMPLETED' && c.conclusion === 'SUCCESS') && c.state !== 'SUCCESS')) fail('ci');
+}
+
+async function waitForRequirements(env, api, sleep = wait) {
+  const match = expected(env);
+  for (let attempt = 0; ; attempt++) {
+    await pendingChecks(env, api, match);
+    try {
+      await currentCandidate(api, match, true, true);
+      await requirements(env, api, match); return;
+    }
+    catch (error) {
+      // Bounded polling accommodates asynchronous CI. Failures remain unauthorized.
+      if (!(error instanceof MergePending) && !(error instanceof ControlFailure && error.category === 'ci')) throw error;
+      if (attempt === 59) throw error;
+      await sleep(10000);
+    }
+  }
+}
+
 async function requestAutoMerge(env, api) {
   const match = expected(env);
   if (env.DISARM_RESULT !== 'success' || env.ELIGIBILITY_RESULT !== 'success' ||
       env.ELIGIBLE !== 'true' || !policy.reviewPass(env.REVIEW_JSON, env.REVIEW_RESULT)) fail('invalid');
   await pendingChecks(env, api, match);
+  await requirements(env, api, match);
   // The live PR read is immediately before the mutation. expectedHeadOid also
   // binds the head atomically inside GitHub; strict branch protection guards main.
   const pr = await currentCandidate(api, match, true);
@@ -380,6 +495,7 @@ async function main(env) {
     case 'publish': return publish(env, client(env));
     case 'feedback': return publishFeedback(env, client(env));
     case 'disarm': return disarmAutoMerge(env, client(env));
+    case 'wait': return waitForRequirements(env, client(env));
     case 'request': return output(env, await requestAutoMerge(env, client(env)));
     default: fail();
   }
@@ -391,4 +507,4 @@ if (require.main === module) main(process.env).catch(error => {
 });
 
 module.exports = { expected, client, snapshot, candidate, readBlob, classifyCandidate, prepare,
-  publish, diagnostic, feedbackBody, publishFeedback, disarmAutoMerge, requestAutoMerge };
+  publish, diagnostic, feedbackBody, publishFeedback, disarmAutoMerge, requestAutoMerge, waitForRequirements, requirements };

@@ -1,32 +1,47 @@
 name: Codex Review
+run-name: "Codex review PR #${{ github.event.pull_request.number || inputs.pr }}"
 
 # pull_request_target deliberately loads workflow/code/instructions from main.
 # Candidate files are read as data only; never run npm or scripts from the PR.
 on:
   pull_request_target:
     branches: [main]
-    types: [opened, synchronize, reopened, ready_for_review, converted_to_draft, edited]
+    types: [opened, synchronize, reopened, ready_for_review, converted_to_draft, closed]
+
+  # Explicit maintainer invocation selects the trusted workflow ref; PR inputs
+  # only select data. It is also the pre-merge integration entry point.
+  workflow_dispatch:
+    inputs:
+      pr:
+        description: Same-repository PR number to evaluate with this trusted workflow ref
+        required: true
+        type: string
 
 permissions:
   contents: read
 
 concurrency:
-  group: codex-review-pr-${{ github.event.pull_request.number }}
-  cancel-in-progress: false
+  group: codex-review-pr-${{ github.event.pull_request.number || inputs.pr }}
+  cancel-in-progress: true
 
 jobs:
   snapshot:
     if: >-
       github.repository == 'dexsword/dextech' &&
-      github.event.pull_request.base.repo.full_name == 'dexsword/dextech' &&
+      (github.event_name == 'workflow_dispatch' ||
+      (github.event.pull_request.base.repo.full_name == 'dexsword/dextech' &&
       github.event.pull_request.base.ref == 'main' &&
-      github.event.pull_request.head.repo.full_name == 'dexsword/dextech'
+      github.event.pull_request.head.repo.full_name == 'dexsword/dextech'))
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:
-      contents: read
+      contents: write
+      pull-requests: write
       checks: write
     outputs:
+      active: ${{ steps.snapshot.outputs.active }}
+      control: ${{ steps.snapshot.outputs.control }}
+      draft: ${{ steps.snapshot.outputs.draft }}
       head: ${{ steps.snapshot.outputs.head }}
       merge: ${{ steps.snapshot.outputs.merge }}
       base: ${{ steps.snapshot.outputs.base }}
@@ -40,12 +55,13 @@ jobs:
           persist-credentials: false
           path: control
       - id: snapshot
-        name: Bind pending merge-candidate checks to this trusted run
+        name: Disarm and bind pending source-head checks to this trusted run
         env:
           GH_TOKEN: ${{ github.token }}
         run: node control/.github/codex/control.cjs snapshot
 
   eligibility:
+    if: needs.snapshot.outputs.active == 'true'
     needs: [snapshot, disarm]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
@@ -61,7 +77,7 @@ jobs:
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
-          ref: ${{ needs.snapshot.outputs.base }}
+          ref: ${{ needs.snapshot.outputs.control }}
           persist-credentials: false
           path: control
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -75,6 +91,7 @@ jobs:
         run: node control/.github/codex/control.cjs classify
 
   review:
+    if: needs.snapshot.outputs.active == 'true'
     needs: [snapshot, disarm]
     runs-on: ubuntu-24.04
     timeout-minutes: 20
@@ -90,7 +107,7 @@ jobs:
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
-          ref: ${{ needs.snapshot.outputs.base }}
+          ref: ${{ needs.snapshot.outputs.control }}
           persist-credentials: false
           path: control
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -121,7 +138,7 @@ jobs:
           allow-users: '*'
 
   disarm:
-    if: ${{ always() && needs.snapshot.result == 'success' }}
+    if: ${{ always() && needs.snapshot.result == 'success' && needs.snapshot.outputs.active == 'true' }}
     needs: snapshot
     runs-on: ubuntu-24.04
     timeout-minutes: 5
@@ -131,7 +148,7 @@ jobs:
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
-          ref: ${{ needs.snapshot.outputs.base }}
+          ref: ${{ needs.snapshot.outputs.control }}
           persist-credentials: false
           path: control
       - name: Revoke any previous native auto-merge request before final checks
@@ -144,7 +161,7 @@ jobs:
         run: node control/.github/codex/control.cjs disarm
 
   publish:
-    if: ${{ always() && needs.snapshot.result == 'success' }}
+    if: ${{ always() && needs.snapshot.result == 'success' && needs.snapshot.outputs.active == 'true' }}
     needs: [snapshot, eligibility, review, disarm, auto-merge]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
@@ -157,11 +174,11 @@ jobs:
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
-          ref: ${{ needs.snapshot.outputs.base }}
+          ref: ${{ needs.snapshot.outputs.control }}
           persist-credentials: false
           path: control
       - id: publish
-        name: Validate schema and publish merge-candidate checks
+        name: Validate schema and publish source-head checks
         env:
           GH_TOKEN: ${{ github.token }}
           HEAD_SHA: ${{ needs.snapshot.outputs.head }}
@@ -175,7 +192,7 @@ jobs:
           DISARM_RESULT: ${{ needs.disarm.result }}
           ELIGIBILITY_RESULT: ${{ needs.eligibility.result }}
           ELIGIBLE: ${{ needs.eligibility.outputs.eligible }}
-          PR_DRAFT: ${{ github.event.pull_request.draft }}
+          PR_DRAFT: ${{ needs.snapshot.outputs.draft }}
           AUTO_MERGE_RESULT: ${{ needs.auto-merge.result }}
           CONFIRMED_HEAD: ${{ needs.auto-merge.outputs.confirmed_head }}
           CONFIRMED_MERGE: ${{ needs.auto-merge.outputs.confirmed_merge }}
@@ -184,7 +201,7 @@ jobs:
         run: node control/.github/codex/control.cjs publish
 
   feedback:
-    if: ${{ always() && needs.snapshot.result == 'success' && needs.review.result == 'success' }}
+    if: ${{ always() && needs.snapshot.result == 'success' && needs.snapshot.outputs.active == 'true' && needs.review.result == 'success' }}
     needs: [snapshot, review, publish]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
@@ -194,7 +211,7 @@ jobs:
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
-          ref: ${{ needs.snapshot.outputs.base }}
+          ref: ${{ needs.snapshot.outputs.control }}
           persist-credentials: false
           path: control
       - name: Publish metadata-only exact-head review feedback
@@ -210,14 +227,13 @@ jobs:
 
   auto-merge:
     if: >-
-      always() && needs.snapshot.result == 'success' &&
+      always() && needs.snapshot.result == 'success' && needs.snapshot.outputs.active == 'true' &&
       needs.disarm.result == 'success' && needs.review.result == 'success' &&
       needs.eligibility.result == 'success' && needs.eligibility.outputs.eligible == 'true' &&
-      github.event.pull_request.draft == false &&
-      github.event.pull_request.head.repo.full_name == 'dexsword/dextech'
+      needs.snapshot.outputs.draft == 'false'
     needs: [snapshot, disarm, eligibility, review]
     runs-on: ubuntu-24.04
-    timeout-minutes: 5
+    timeout-minutes: 15
     permissions:
       contents: write
       pull-requests: write
@@ -230,7 +246,7 @@ jobs:
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
-          ref: ${{ needs.snapshot.outputs.base }}
+          ref: ${{ needs.snapshot.outputs.control }}
           persist-credentials: false
           path: control
       - name: Request and confirm native squash auto-merge while checks are pending
@@ -248,4 +264,6 @@ jobs:
           DISARM_RESULT: ${{ needs.disarm.result }}
           ELIGIBILITY_RESULT: ${{ needs.eligibility.result }}
           ELIGIBLE: ${{ needs.eligibility.outputs.eligible }}
-        run: node control/.github/codex/control.cjs request
+        run: |
+          node control/.github/codex/control.cjs wait
+          node control/.github/codex/control.cjs request
