@@ -958,7 +958,7 @@ test('snapshot installs pending checks immediately and retries transient merge d
 test('live readiness requires native CI on HEAD, valid review metadata, and mergeability', async () => {
   const variants = [
     ['ci-failure', p => p.commits.nodes[0].commit.statusCheckRollup.contexts.nodes[0].conclusion = 'FAILURE'],
-    ['ci-pending', p => p.commits.nodes[0].commit.statusCheckRollup.contexts.nodes[0].status = 'IN_PROGRESS'],
+    ['ci-contradictory', p => p.commits.nodes[0].commit.statusCheckRollup.contexts.nodes[0].status = 'IN_PROGRESS'],
     ['missing-ci', p => p.commits.nodes[0].commit.statusCheckRollup.contexts.nodes.shift()],
     ['split-sha', p => p.potentialMergeCommit.statusCheckRollup = { contexts: { nodes: [{ __typename: 'CheckRun' }] } }],
     ['malformed-approval', p => p.reviewDecision = 'UNRECOGNIZED'],
@@ -1035,7 +1035,8 @@ test('reruns reclaim existing pending head checks and close/reopen disarms witho
 
 test('workflow avoids recursive and irrelevant events and admits only base-controlled PR events', () => {
   const workflow = fs.readFileSync(path.join(__dirname, '../.github/workflows/codex-review.yml'), 'utf8');
-  assert.doesNotMatch(workflow, /\bedited\b|\bcheck_run:|\bcheck_suite:|\bstatus:/);
+  assert.doesNotMatch(workflow, /\bcheck_run:|\bcheck_suite:|\bstatus:/);
+  assert.match(workflow, /converted_to_draft, closed, edited/);
   assert.match(workflow, /cancel-in-progress: true/);
   assert.match(workflow, /converted_to_draft, closed/);
   assert.doesNotMatch(workflow, /workflow_dispatch:/);
@@ -1156,4 +1157,109 @@ test('native auto-merge waits for enforced reviews and conversations without ano
     assert.equal(state.reviewDecision, decision);
     assert.equal(state.reviewThreads.nodes[0].isResolved, false);
   }
+});
+
+
+test('pending native CI uses GitHub auto-merge without a local completion deadline', async t => {
+  for (const status of ['QUEUED', 'IN_PROGRESS', 'WAITING', 'PENDING', 'REQUESTED']) {
+    const mock = orderAPI();
+    const response = readiness();
+    const native = response.data.repository.pullRequest.commits.nodes[0].commit.statusCheckRollup.contexts.nodes[0];
+    Object.assign(native, { status, conclusion: null, startedAt: '2000-01-01T00:00:00Z' });
+    const api = async (url, method, body) => body?.query?.startsWith('query') ? response : mock.api(url, method, body);
+    const confirmation = await c.requestAutoMerge(env(), api);
+    assert.ok(Object.values(mock.checks).every(check => check.status === 'in_progress'));
+    await c.publish(publicationEnv(t, confirmation), api);
+    assert.ok(Object.values(mock.checks).every(check => check.conclusion === 'success'));
+    assert.equal(native.status, status); // Only GitHub can complete native CI.
+    assert.equal(native.conclusion, null);
+    assert.equal(mock.calls.filter(call => call.body?.query?.includes('enablePullRequestAutoMerge')).length, 1);
+    assert.ok(mock.calls.filter(call => call.method === 'PATCH').every(call => /check-runs\/10[12]$/.test(call.endpoint)));
+  }
+  const workflow = fs.readFileSync(path.join(__dirname, '../.github/workflows/codex-review.yml'), 'utf8');
+  const control = fs.readFileSync(path.join(__dirname, '../.github/codex/control.cjs'), 'utf8');
+  assert.doesNotMatch(workflow, /control\.cjs wait/);
+  assert.doesNotMatch(control, /waitForRequirements/);
+});
+
+test('terminal or malformed CI cannot enable auto-merge, including a failure before publication', async t => {
+  const states = ['FAILURE', 'CANCELLED', 'TIMED_OUT', 'ACTION_REQUIRED', 'STARTUP_FAILURE', 'STALE', 'SKIPPED', 'NEUTRAL', null];
+  for (const conclusion of states) {
+    const mock = orderAPI();
+    const response = readiness();
+    response.data.repository.pullRequest.commits.nodes[0].commit.statusCheckRollup.contexts.nodes[0].conclusion = conclusion;
+    const api = async (url, method, body) => body?.query?.startsWith('query') ? response : mock.api(url, method, body);
+    await assert.rejects(c.requestAutoMerge(env(), api));
+    assert.equal(mock.calls.some(call => call.body?.query?.startsWith('mutation')), false);
+  }
+  const mock = orderAPI();
+  const response = readiness();
+  const native = response.data.repository.pullRequest.commits.nodes[0].commit.statusCheckRollup.contexts.nodes[0];
+  Object.assign(native, { status: 'IN_PROGRESS', conclusion: null });
+  const api = async (url, method, body) => body?.query?.startsWith('query') ? response : mock.api(url, method, body);
+  const confirmation = await c.requestAutoMerge(env(), api);
+  Object.assign(native, { status: 'COMPLETED', conclusion: 'FAILURE' });
+  await assert.rejects(c.publish(publicationEnv(t, confirmation), api));
+  assert.ok(Object.values(mock.checks).every(check => check.status === 'in_progress'));
+});
+
+test('base retargets run both workflows; irrelevant edits cannot cancel or supersede them', async () => {
+  const vm = require('node:vm');
+  const codex = fs.readFileSync(path.join(__dirname, '../.github/workflows/codex-review.yml'), 'utf8');
+  const ci = fs.readFileSync(path.join(__dirname, '../.github/workflows/ci.yml'), 'utf8');
+  const evaluate = (expression, event) => vm.runInNewContext(expression, {
+    github: { event, run_id: 124, workflow: 'CI', ref: 'refs/pull/12/merge', repository: p.REPOSITORY },
+    format: (template, value) => template.replace('{0}', value)
+  });
+  const expand = (text, event) => text.replace(/\$\{\{ (.*?) \}\}/g, (_, expression) => evaluate(expression, event));
+  const guard = codex.match(/  snapshot:\n    if: >-\n([\s\S]*?)    runs-on:/)[1].trim();
+  const ciGuard = ci.match(/    if: (.*)/)[1];
+  const ciName = ci.match(/    name: (.*)/)[1];
+  const group = workflow => workflow.match(/  group: (.*)/)[1];
+  const title = codex.match(/run-name: "(.*)"/)[1];
+  assert.match(ci, /types: \[opened, synchronize, reopened, edited\]/);
+  for (const changes of [{ base: { ref: { from: 'develop' } } }, {}, { title: { from: 'old' } }, { body: { from: 'old' } }]) {
+    // Actions expressions resolve absent nested fields to null. Represent that
+    // explicitly here; all evaluated expressions come from the trusted workflows.
+    const event = { action: 'edited', pull_request: pr(), changes: { ...changes, base: changes.base || { ref: { from: null } } } };
+    const relevant = !!changes.base;
+    assert.equal(!!evaluate(guard, event), relevant);
+    assert.equal(!!evaluate(ciGuard, event), relevant);
+    assert.equal(expand(ciName, event), relevant ? 'checks' : 'Ignored PR edit');
+    assert.equal(expand(group(codex), event), relevant ? 'codex-review-pr-12' : 'codex-review-pr-ignored-124');
+    assert.equal(expand(group(ci), event), relevant ? 'CI-12' : 'CI-ignored-124');
+    const display_title = expand(title, event);
+    assert.equal(display_title, relevant ? 'Codex review PR #12' : 'Ignored PR edit #12');
+    const mock = orderAPI();
+    const api = async (url, method, body) => {
+      const result = await mock.api(url, method, body);
+      if (url.includes('/actions/workflows/')) result.workflow_runs.push({ id: 124, display_title });
+      return result;
+    };
+    if (relevant) await assert.rejects(c.requestAutoMerge(env(), api));
+    else await c.requestAutoMerge(env(), api);
+  }
+});
+
+test('snapshot ignores title/body edits before API access but retargets create pending checks', async t => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'dextech-retarget-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const values = { ...env(), GITHUB_EVENT_PATH: path.join(dir, 'event'), GITHUB_OUTPUT: path.join(dir, 'output'),
+    GITHUB_SHA: base, GITHUB_REPOSITORY: p.REPOSITORY, GITHUB_EVENT_NAME: 'pull_request_target' };
+  for (const changes of [undefined, {}, { title: { from: 'old' } }, { body: { from: 'old' } }]) {
+    fs.writeFileSync(values.GITHUB_EVENT_PATH, JSON.stringify({ action: 'edited', changes, pull_request: pr() }));
+    await c.snapshot(values, async () => assert.fail('irrelevant edit accessed API'));
+  }
+  fs.writeFileSync(values.GITHUB_EVENT_PATH, JSON.stringify({ action: 'edited',
+    changes: { base: { ref: { from: 'develop' } } }, pull_request: pr() }));
+  const writes = [];
+  await c.snapshot(values, async (url, method, body) => {
+    if (method === 'POST') {
+      writes.push(body);
+      return { ...body, id: 100 + writes.length, conclusion: null };
+    }
+    return mergeResponse(url) || pr();
+  }, async () => assert.fail('unexpected metadata retry'));
+  assert.equal(writes.length, 2);
+  assert.ok(writes.every(check => check.head_sha === head && check.status === 'in_progress'));
 });

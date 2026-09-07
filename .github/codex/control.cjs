@@ -19,7 +19,7 @@ const DIAGNOSTICS = Object.freeze({
   unexpected: 'unexpected-github-response',
   invalid: 'invalid-review-or-eligibility',
   pending: 'required-checks-not-pending',
-  ci: 'required-ci-not-successful',
+  ci: 'required-ci-missing-invalid-or-failed',
   approval: 'unexpected-review-metadata',
   obsolete: 'superseded-or-cancelled-run'
 });
@@ -133,6 +133,11 @@ async function snapshot(env, api, sleep = wait) {
   const event = JSON.parse(fs.readFileSync(env.GITHUB_EVENT_PATH, 'utf8'));
   if (env.GITHUB_REPOSITORY !== REPOSITORY) fail();
   if (env.GITHUB_EVENT_NAME !== 'pull_request_target') fail();
+  // Only a base retarget is a relevant edit; title/body edits cannot disarm a run.
+  if (event.action === 'edited' &&
+      !(typeof event.changes?.base?.ref?.from === 'string' && event.changes.base.ref.from.length > 0)) {
+    return output(env, { active: false });
+  }
   if (!policy.sameCandidate({ ...event.pull_request, state: 'open' },
       { number: event.pull_request?.number, head: event.pull_request?.head?.sha, base: env.GITHUB_SHA })) fail();
   const number = event.pull_request?.number;
@@ -467,27 +472,21 @@ async function requirements(env, api, match) {
     const found = required.filter(c => c.name === name && c.checkSuite?.app?.slug === 'github-actions' &&
       c.checkSuite.app.databaseId === 15368);
     if (found.length !== 1) fail('ci');
-    if (name === 'checks' && (found[0].status !== 'COMPLETED' || found[0].conclusion !== 'SUCCESS')) fail('ci');
+    if (name === 'checks' && !checkAllowsNativeWait(found[0])) fail('ci');
   }
   if (required.some(c => !Object.values(CHECKS).includes(c.name) &&
-      !(c.status === 'COMPLETED' && c.conclusion === 'SUCCESS') && c.state !== 'SUCCESS')) fail('ci');
+      !checkAllowsNativeWait(c))) fail('ci');
 }
 
-async function waitForRequirements(env, api, sleep = wait) {
-  const match = expected(env);
-  for (let attempt = 0; ; attempt++) {
-    await pendingChecks(env, api, match);
-    try {
-      await currentCandidate(api, match, true, true);
-      await requirements(env, api, match); return;
-    }
-    catch (error) {
-      // Bounded polling accommodates asynchronous CI. Failures remain unauthorized.
-      if (!(error instanceof MergePending) && !(error instanceof ControlFailure && error.category === 'ci')) throw error;
-      if (attempt === 59) throw error;
-      await sleep(10000);
-    }
+// GitHub owns the wait for required CI, just as for required human reviews.
+// Never turn a queued/running check into failure because a local timer expired.
+// Missing contexts and terminal failures remain rejected by requirements().
+function checkAllowsNativeWait(check) {
+  if (typeof check.name === 'string') {
+    return (check.status === 'COMPLETED' && check.conclusion === 'SUCCESS') ||
+      (['QUEUED', 'IN_PROGRESS', 'WAITING', 'PENDING', 'REQUESTED'].includes(check.status) && check.conclusion === null);
   }
+  return typeof check.context === 'string' && ['SUCCESS', 'PENDING'].includes(check.state);
 }
 
 async function requestAutoMerge(env, api) {
@@ -524,7 +523,6 @@ async function main(env) {
     case 'publish': return publish(env, client(env));
     case 'feedback': return publishFeedback(env, client(env));
     case 'disarm': return disarmAutoMerge(env, client(env));
-    case 'wait': return waitForRequirements(env, client(env));
     case 'request': return output(env, await requestAutoMerge(env, client(env)));
     default: fail();
   }
@@ -536,4 +534,4 @@ if (require.main === module) main(process.env).catch(error => {
 });
 
 module.exports = { expected, client, snapshot, candidate, readBlob, classifyCandidate, prepare,
-  publish, diagnostic, feedbackBody, publishFeedback, disarmAutoMerge, requestAutoMerge, waitForRequirements, requirements };
+  publish, diagnostic, feedbackBody, publishFeedback, disarmAutoMerge, requestAutoMerge, requirements };

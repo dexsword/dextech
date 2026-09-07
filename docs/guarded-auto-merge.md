@@ -72,16 +72,21 @@ authorization. It never copies CI results or creates a custom `checks` context.
    timeouts bound prolonged outages; a later fresh run is needed after exhaustion.
 3. `disarm` independently verifies revocation before eligibility/review. The
    latter jobs read exact Git objects; neither executes candidate scripts.
-4. The write job waits at most ten minutes for native CI readiness, rechecking
-   candidate/run ownership on every poll. It then independently validates review
-   schema/confidence, eligibility, both pending checks and their ownership,
-   current head/base/merge, native CI success, required-check source/placement,
+4. The write job does not poll for CI completion or impose a CI deadline.
+   It independently validates review schema/confidence, eligibility, both pending
+   checks and their ownership,
+   current head/base/merge, required-check source/placement and valid state,
    repository auto-merge/squash settings, and the shape of human-review metadata.
    Immediately before mutation it re-reads the PR; GitHub's `expectedHeadOid`
    atomically binds the native request to the reviewed head. Required human
    approvals, changes-requested reviews, and unresolved conversations remain held
    by GitHub itself: enabling native auto-merge does not satisfy those requirements.
-   They can be satisfied later without another workflow event or model review.
+   Native CI must exist on the exact head and be successful or in a recognized
+   pending state with no conclusion. Missing, malformed, failed, cancelled, timed-out,
+   skipped, or neutral CI is rejected. Native auto-merge also waits for queued/running
+   CI, however long it takes; completing CI later needs no new event or model review.
+   A failure after authorization still blocks merging through branch protection.
+   Human requirements can likewise be satisfied later without another review.
 5. Request **native squash auto-merge while custom checks are pending**. Confirm
    the response and a fresh independent live read. Only then may `publish` release
    the custom checks, revalidating candidate, prerequisites, and run/check ownership
@@ -93,8 +98,13 @@ authorization. It never copies CI results or creates a custom `checks` context.
    Feedback skips closed PRs, including merges between publication and feedback.
 
 Per-PR concurrency has `cancel-in-progress: true`. Only opened, synchronize,
-reopened, ready-for-review, converted-to-draft, and closed events are automatic;
-there is no broad edited, status, check-run, or check-suite trigger. Updating the
+reopened, ready-for-review, converted-to-draft, closed, and base-retarget edits
+start reviews. Both native CI and Codex admit `edited` only when
+`changes.base.ref.from` is present, so retargeting onto main starts both checks.
+Title/body-only edits skip all jobs and have unique ignored concurrency groups;
+their distinct review run names cannot supersede a current review. Ignored CI
+edits use a different job name so they cannot add a skipped required `checks`
+context. There are no status, check-run, or check-suite triggers. Updating the
 managed comment or checks cannot trigger another review. A rerun reclaims pending checks for the same candidate and changes their
 run/attempt ownership. Completed checks are superseded by fresh pending checks: live GitHub retained
 the old conclusion when asked to reset a completed check, and duplicate older
@@ -116,8 +126,8 @@ from the base. Exact candidate checkouts disable credentials, fetch full history
 and disable tags. Candidate content, filenames, comments, commits, and PR text
 are untrusted data. The review job has only `contents: read`; the official
 `openai/codex-action` is its final substantive step, read-only with `drop-sudo`.
-Pinned release: **v1.12**, commit
-`86365089eb2b84e0a8fb0717b304f8bdcb13b20e`; Codex CLI **0.153.4**.
+Pinned release: **v1.11**, commit
+`52fe01ec70a42f454c9d2ebd47598f9fd6893d56`; Codex CLI **0.153.4**.
 Candidate configuration/instructions are disabled; trusted prompt/config/schema
 are supplied separately, with shell tools and unnecessary networking disabled.
 Missing secrets/action failure/output or invalid JSON/schema fail closed.
@@ -164,7 +174,7 @@ merge. This test must not deploy production; production workflow dispatch remain
 a separately authorized action. No reusable merge token is introduced here.
 
 Fixed diagnostic categories include stale head/base, stale/unavailable merge,
-merge discovery timeout, required CI not successful, unexpected human-review metadata,
+merge discovery timeout, required CI missing, invalid, or failed, unexpected human-review metadata,
 superseded/cancelled run, permission/settings rejection, immediately mergeable,
 invalid review/eligibility, non-pending checks, unavailable auto-merge, and
 unexpected response. Raw API/error/model bodies and credentials are never logged.
@@ -304,3 +314,29 @@ another review run or a manual merge. This verifies the enforced conversation
 hold and release. Required approval count is currently zero, so nonzero human
 approval requirements rely on GitHub's documented native enforcement and local
 contract tests; no settings were changed to simulate them.
+
+
+## CI waiting and base-retarget follow-up
+
+The controller now delegates pending CI to [GitHub native auto-merge](https://docs.github.com/en/pull-requests/how-tos/merge-and-close-pull-requests/automatically-merging-a-pull-request),
+removing the ten-minute CI polling cutoff. This is independent of the v1.11
+wrapper rollback: the reviewer still has its existing 20-minute job limit, and
+merge-candidate discovery retains its bounded metadata retries. A missing native
+CI context or API outage still fails closed; this change does not invent results
+or automatically retry a failed review.
+
+Local validation on 2026-09-07 passed clean installation, all **89 Node tests**,
+**9 deployment tests**, smoke/synthetic health, actionlint, ShellCheck, shell and
+JavaScript syntax, YAML, JSON Schema, TOML schema, and Python parsing. Production
+audit reported zero high/critical findings (existing one low and one moderate).
+New tests cover pending CI without a completion deadline, failure before
+publication, base-retarget triggering, ignored edit isolation, and preservation
+of the native required check name. The earlier live integration evidence above
+predates this follow-up; it does not claim a live retarget or slow-CI experiment.
+
+After this base-controlled workflow reaches main, validate a harmless eligible PR
+with CI still pending when review completes: native squash auto-merge should be
+enabled, custom checks should pass on HEAD, and GitHub should retain the CI hold.
+Also retarget a harmless PR onto main and confirm both workflows start; a later
+title/body edit must start no jobs, cancel no active run, and create no second
+required `checks` context. Neither check requires changing branch protection.
