@@ -156,13 +156,13 @@ classified and reviewed by Codex. `MERGE_SHA` is GitHub's current synthetic
 `merge_commit_sha` after `mergeable` is explicitly true. `BASE_SHA` remains the
 captured main commit controlling the workflow, policy and review instructions.
 
-GitHub can require all status checks on the synthetic merge candidate once CI
-reports there. Head-only custom checks do not satisfy those requirements, even
-with identical names and the GitHub Actions source. Both custom check runs now
-use `head_sha: MERGE_SHA` in the Checks API. Their external binding includes the
-run, attempt, source head, merge candidate and base. Check summaries display both
-reviewed head and merge SHA; metadata-only feedback comments still describe the
-source head reviewed by Codex.
+GitHub's [required-check troubleshooting documentation](https://docs.github.com/en/pull-requests/how-tos/merge-and-close-pull-requests/troubleshooting-required-status-checks#conflicts-between-head-commit-and-test-merge-commit)
+says merge-commit results take precedence when that commit has a status; otherwise
+head results apply. Executing CI against a synthetic merge checkout does not by
+itself prove that its check run is attached to that SHA. The proposed implementation
+publishes both custom checks with `head_sha: MERGE_SHA`, binding run, attempt,
+source head, merge and base. This placement still needs end-to-end verification
+alongside the actual CI check placement; see the live evidence below.
 
 Snapshot capture, native request, request confirmation and final check publication
 verify the live merge ref and its two parents (captured base first, source head
@@ -187,6 +187,55 @@ merge candidate, reuse an old merge receipt, or silently recapture a different
 candidate mid-run. Start a fresh trusted run once GitHub has a valid candidate.
 GitHub has no atomic merge-candidate precondition on enable-auto-merge/check writes;
 the immediate revalidation and required up-to-date ruleset remain authoritative.
+
+## Live GitHub verification and unresolved placement risk
+
+Read-only checks on 2026-09-07 at 10:01 UTC used authenticated local `gh` against
+GitHub's real REST API, independently of the unit-test mocks. No check/status,
+auto-merge request, workflow run, ruleset, PR #13 update, or merge was created.
+The following immutable observations describe that time, not future PR heads:
+
+| PR | Source head | Synthetic merge |
+| --- | --- | --- |
+| #13 | `6afedeb8efc034f778e93bd133ce9dd1451bb567` | `9c19711cb0c85c409a7d62574d240c01491190d4` |
+| #17 | `0b2e11fc4ee3529b5cbbaa5c7e1f3c5bffae2a22` | `9c8af51bcc850f3214f31e7a581916fea6dd13bd` |
+
+For both PRs, `GET /repos/dexsword/dextech/git/ref/pull/<number>/merge` and
+`GET /repos/dexsword/dextech/git/commits/<merge_sha>` succeeded. The ref, commit,
+and live PR merge SHA agreed. Each commit had exactly two ordered parents:
+current main `03aafa3b87b2dbe6f9c0808ae46cb5d1d06deb70`, then the source head.
+A second PR read confirmed unchanged head/base/merge bindings. This verifies
+endpoint availability and parent shape with the local CLI identity, not the
+permissions of a future Actions token.
+
+Crucially, `GET /repos/dexsword/dextech/commits/<sha>/check-runs` showed the
+successful CI `checks` result on each **source head**, not its merge SHA.
+Check IDs were `101688378569` (#13) and `101698936565` (#17). Their check suites
+also named the source head; their CI runs were [34105159618](https://github.com/dexsword/dextech/actions/runs/34105159618)
+and [34108484917](https://github.com/dexsword/dextech/actions/runs/34108484917), both
+`pull_request` runs. Both synthetic merge SHAs had zero check runs and zero legacy
+statuses. The three required contexts were `checks`, `Codex Review / gate`, and
+`Auto Merge / eligible`, all bound to integration ID 15368 (GitHub Actions), with
+strict up-to-date checking enabled in the effective main rules.
+
+These observations do **not** establish the earlier claim that CI already reports
+on the merge SHA. Moving only the custom checks could create a split with CI and
+leave a required check waiting. Do not treat this PR as verified for installation
+on the strength of mocks or endpoint availability alone. The repository-wide
+placement change remains unresolved pending a controlled integration experiment
+that demonstrates all three required checks are recognized together. Such an
+experiment must use an explicitly authorized isolated test repository or otherwise
+approved setup; do not manufacture production authorization checks or weaken the
+live ruleset to test it. Native auto-merge/check-write behavior was not exercised
+by this read-only verification. Existing first-run instructions are conditional on
+resolving this risk; do not synchronize PR #13 as part of this investigation.
+
+To repeat the read-only verification, read the live PR and main ref, resolve the
+merge ref and ordered parents, list check runs and legacy statuses separately for
+head and merge, and re-read the PR to reject changing bindings. Inspect only SHA,
+check ID/name/state/app, and rules metadata; never publish raw response bodies or
+review output. GitHub documents mergeability's asynchronous calculation in
+[Get a pull request](https://docs.github.com/en/rest/pulls/pulls#get-a-pull-request).
 
 ## Review decision and eligibility
 
