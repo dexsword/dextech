@@ -191,6 +191,7 @@ jobs:
           CONFIRMED_MERGE: ${{ needs.auto-merge.outputs.confirmed_merge }}
           CONFIRMED_BASE: ${{ needs.auto-merge.outputs.confirmed_base }}
           CONFIRMED_RUN: ${{ needs.auto-merge.outputs.confirmed_run }}
+          CONFIRMED_APP: ${{ needs.auto-merge.outputs.confirmed_app }}
         run: node control/.github/codex/control.cjs publish
 
   feedback:
@@ -237,6 +238,7 @@ jobs:
       confirmed_merge: ${{ steps.request.outputs.confirmed_merge }}
       confirmed_base: ${{ steps.request.outputs.confirmed_base }}
       confirmed_run: ${{ steps.request.outputs.confirmed_run }}
+      confirmed_app: ${{ steps.request.outputs.confirmed_app }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:

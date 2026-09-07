@@ -623,14 +623,14 @@ function publicationEnv(t, confirmation = {}) {
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
   return { ...env(), GITHUB_OUTPUT: path.join(dir, 'output'), AUTO_MERGE_RESULT: 'success',
     CONFIRMED_HEAD: confirmation.confirmed_head, CONFIRMED_BASE: confirmation.confirmed_base, CONFIRMED_MERGE: confirmation.confirmed_merge,
-    CONFIRMED_RUN: confirmation.confirmed_run };
+    CONFIRMED_RUN: confirmation.confirmed_run, CONFIRMED_APP: confirmation.confirmed_app };
 }
 
 test('request and read-back confirmation precede both successful required checks', async t => {
   const mock = orderAPI();
   const confirmation = await c.requestAutoMerge(env(), mock.api);
   assert.ok(Object.values(mock.checks).every(x => x.status === 'in_progress'));
-  assert.deepEqual(confirmation, { confirmed_head: head, confirmed_base: base, confirmed_merge: merge, confirmed_run: `123:1:${head}:${merge}:${base}` });
+  assert.deepEqual(confirmation, { confirmed_head: head, confirmed_base: base, confirmed_merge: merge, confirmed_run: `123:1:${head}:${merge}:${base}`, confirmed_app: 'dextech-merge' });
   await c.publish(publicationEnv(t, confirmation), mock.api);
   assert.ok(Object.values(mock.checks).every(x => x.status === 'completed' && x.conclusion === 'success'));
   const enableIndex = mock.calls.findIndex(x => x.body?.query?.startsWith('mutation'));
@@ -762,7 +762,7 @@ test('workflow orders disarming, evaluation, native request, then publication wi
   assert.match(job('publish'), /needs: \[snapshot, eligibility, review, disarm, auto-merge\]/);
   assert.match(job('publish'), /contents: read\n      checks: write/);
   assert.doesNotMatch(job('publish'), /pull-requests: write|contents: write/);
-  for (const field of ['confirmed_head', 'confirmed_base', 'confirmed_merge', 'confirmed_run']) {
+  for (const field of ['confirmed_head', 'confirmed_base', 'confirmed_merge', 'confirmed_run', 'confirmed_app']) {
     assert.ok(job('publish').includes(`needs.auto-merge.outputs.${field}`));
   }
   const source = fs.readFileSync(path.join(__dirname, '../.github/codex/control.cjs'), 'utf8');
@@ -1348,4 +1348,33 @@ test('only the separate trusted final job receives the scoped, revocable App tok
   assert.match(job, /GH_TOKEN: \$\{\{ github.token \}\}/);
   assert.match(job, /ref: \$\{\{ needs.snapshot.outputs.base \}\}/);
   assert.match(job, /permissions:\n      actions: read\n      contents: read\n      pull-requests: read\n      checks: read/);
+});
+
+
+test('publisher rejects replacement native requests before and between successful check writes', async t => {
+  for (const replaceAt of [0, 1]) {
+    const mock = orderAPI();
+    const confirmation = await c.requestAutoMerge(env(), mock.api);
+    let writes = 0;
+    const api = async (url, method, body) => {
+      const result = await mock.api(url, method, body);
+      if (method === 'PATCH' && body?.conclusion === 'success') writes++;
+      if (url.endsWith('/pulls/12') && writes >= replaceAt) {
+        result.auto_merge.enabled_by.login = 'github-actions[bot]';
+      }
+      return result;
+    };
+    await assert.rejects(c.publish(publicationEnv(t, confirmation), api));
+    assert.equal(writes, replaceAt);
+    assert.equal(Object.values(mock.checks).every(check => check.conclusion === 'success'), false);
+  }
+});
+
+test('publisher requires the App identity in the trusted request receipt', async t => {
+  for (const identity of [undefined, '', 'github-actions', 'invalid[bot]']) {
+    const mock = orderAPI();
+    const confirmation = await c.requestAutoMerge(env(), mock.api);
+    await assert.rejects(c.publish({ ...publicationEnv(t, confirmation), CONFIRMED_APP: identity }, mock.api));
+    assert.equal(mock.calls.some(call => call.body?.conclusion === 'success'), false);
+  }
 });

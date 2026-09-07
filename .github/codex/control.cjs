@@ -291,7 +291,7 @@ async function publish(env, api) {
     env.CONFIRMED_HEAD === match.head && env.CONFIRMED_BASE === match.base &&
     env.CONFIRMED_MERGE === match.merge &&
     env.CONFIRMED_RUN === binding(env, match) && pr.draft === false &&
-    pr.auto_merge?.merge_method === 'squash';
+    appRequestMatches(pr, env.CONFIRMED_APP);
   const passed = reviewOK && classificationOK && (manual || confirmed);
   for (const kind of ['gate', 'eligible']) {
     const conclusion = kind === 'gate' ? (passed ? 'success' : 'failure') :
@@ -299,7 +299,7 @@ async function publish(env, api) {
     // Revalidate both bindings before EACH result, including between writes.
     if (passed && !manual) await requirements(env, api, match);
     const live = await currentCandidate(api, match);
-    if (passed && !manual && (live.draft !== false || live.auto_merge?.merge_method !== 'squash')) fail('unavailable');
+    if (passed && !manual && (live.draft !== false || !appRequestMatches(live, env.CONFIRMED_APP))) fail('unavailable');
     if (passed && manual && eligible && live.draft !== true) fail('inactive');
     await activeRun(env, api);
     const owned = await api(`/repos/${REPOSITORY}/check-runs/${ids[kind]}`);
@@ -490,6 +490,12 @@ function checkAllowsNativeWait(check) {
   return typeof check.context === 'string' && ['SUCCESS', 'PENDING'].includes(check.state);
 }
 
+function appRequestMatches(pr, slug) {
+  return typeof slug === 'string' && /^[a-z0-9][a-z0-9-]{0,99}$/.test(slug) &&
+    pr.auto_merge?.merge_method === 'squash' &&
+    pr.auto_merge.enabled_by?.login === `${slug}[bot]`;
+}
+
 function mergeAppClient(env, fetcher = fetch) {
   if (!env.MERGE_APP_TOKEN) fail('app');
   return client({ GH_TOKEN: env.MERGE_APP_TOKEN }, fetcher);
@@ -522,7 +528,7 @@ async function requestAutoMerge(env, api, appApi) {
   const confirmed = await currentCandidate(appApi, match, true);
   if (confirmed.node_id !== pr.node_id || confirmed.auto_merge?.merge_method !== 'squash') fail('unavailable');
   if (confirmed.auto_merge.enabled_by?.login !== appLogin) fail('app');
-  return { confirmed_head: match.head, confirmed_base: match.base, confirmed_merge: match.merge, confirmed_run: binding(env, match) };
+  return { confirmed_head: match.head, confirmed_base: match.base, confirmed_merge: match.merge, confirmed_run: binding(env, match), confirmed_app: env.MERGE_APP_SLUG };
 }
 
 async function main(env) {

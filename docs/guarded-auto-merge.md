@@ -362,7 +362,10 @@ needed. `GITHUB_TOKEN` in the request job is read-only and supplies the Actions,
 required-check, and review-metadata queries. The App token supplies only final
 head/base/merge revalidation, `enablePullRequestAutoMerge` with expected HEAD and
 SQUASH, and independent confirmation. Existing requests and read-back must name
-this App's bot identity; an old `github-actions[bot]` request cannot masquerade as
+this App's bot identity. The trusted request receipt carries the App slug;
+publication rechecks that identity before each successful required check, using
+its existing read token and no App credentials. A replaced request fails closed.
+An old `github-actions[bot]` request cannot masquerade as
 an App request. There is no token fallback or immediate merge endpoint.
 
 The read-only Codex job, eligibility checks, publication and metadata-only feedback
