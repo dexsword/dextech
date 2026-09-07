@@ -87,12 +87,16 @@ authorization. It never copies CI results or creates a custom `checks` context.
    not an ordinary CI failure. Codex must still pass. Feedback is a single managed
    comment containing only fixed text, severity counts, bounded confidence, and
    reviewed SHA; all model filenames/explanations/summaries are withheld.
+   Feedback skips closed PRs, including merges between publication and feedback.
 
 Per-PR concurrency has `cancel-in-progress: true`. Only opened, synchronize,
 reopened, ready-for-review, converted-to-draft, and closed events are automatic;
 there is no broad edited, status, check-run, or check-suite trigger. Updating the
-managed comment or checks cannot trigger another review. A rerun resets/reclaims
-the same candidate's checks and changes their run/attempt ownership. Old runs,
+managed comment or checks cannot trigger another review. A rerun reclaims pending checks for the same candidate and changes their
+run/attempt ownership. Completed checks are superseded by fresh checks: live GitHub
+retained the old conclusion when asked to reset a completed check. Snapshot
+requires the API response to confirm pending state, null conclusion, and exact
+head/ownership before proceeding. Old runs,
 old receipts, cancelled attempts, and runs superseded by a newer same-PR run
 cannot authorize. Checks from an older source SHA never authorize a newer one.
 GitHub API reads and mutations are separate operations; repeated ownership and
@@ -157,3 +161,68 @@ merge discovery timeout, required CI not successful, unresolved approval/thread,
 superseded/cancelled run, permission/settings rejection, immediately mergeable,
 invalid review/eligibility, non-pending checks, unavailable auto-merge, and
 unexpected response. Raw API/error/model bodies and credentials are never logged.
+
+## Live integration evidence (2026-09-07)
+
+The local gh token could create PRs but dispatch returned HTTP 403 with
+`X-Accepted-Github-Permissions: actions=write`. Its effective Actions write
+permission was unavailable. No token or repository permissions were changed.
+An isolated, maintainer-owned `ci/guarded-merge-validation` branch instead used a
+push-only harness with a fixed disposable PR input and the vetted control code.
+Only the trigger/input adapter differed; no PR candidate code was executed by a
+privileged job. The harness is not part of this PR or the main workflow.
+
+[PR #18](https://github.com/dexsword/dextech/pull/18) used two harmless documentation
+commits. On the second push, obsolete review runs `34111107752`, `34111026139`,
+`34111280261`, and `34111283910` were cancelled. The successful authorization path
+was [run 34111291990](https://github.com/dexsword/dextech/actions/runs/34111291990).
+Its immutable source head was `bce137a6e9c895190eb89fd1cf0d37a7b7ea2eb9`, base
+`03aafa3b87b2dbe6f9c0808ae46cb5d1d06deb70`, and synthetic candidate
+`7b6b874cd4df02c01999af4a909a0d670c952122`.
+
+| Required context | Check ID | SHA |
+| --- | --- | --- |
+| `checks` | 101707883826 | `bce137a6e9c895190eb89fd1cf0d37a7b7ea2eb9` |
+| `Codex Review / gate` | 101707974042 | `bce137a6e9c895190eb89fd1cf0d37a7b7ea2eb9` |
+| `Auto Merge / eligible` | 101707985180 | `bce137a6e9c895190eb89fd1cf0d37a7b7ea2eb9` |
+
+GitHub Actions enabled native SQUASH at 10:25:49 UTC. At 10:25:58 both custom
+checks were observed pending while native auto-merge was enabled. At 10:26:05 the
+review gate passed while eligibility remained pending. At 10:26:09 GitHub merged
+without manual intervention as `5d3ec2471ce7db414eb60f8d8eaaabbe206a02de`.
+All three required contexts ended successful on the same source head. The optional
+feedback job then failed because the PR had already merged; that observed race is
+fixed by the closed-PR no-op regression and verified in the final test below.
+
+Final [PR #19](https://github.com/dexsword/dextech/pull/19) completed end-to-end in
+[run 34111543766](https://github.com/dexsword/dextech/actions/runs/34111543766):
+**snapshot, disarm, eligibility, review, auto-merge, publish, and feedback all
+succeeded**. Native [CI run 34111542594](https://github.com/dexsword/dextech/actions/runs/34111542594)
+also succeeded. The obsolete base review `34111542653` was cancelled. The harness
+control code was identical to this PR's implementation (the adapter only selected
+its trusted control revision and fixed PR number).
+
+| Required context | Check ID | Source SHA |
+| --- | --- | --- |
+| `checks` | 101708696333 | `5f79e310733f396716e432a9faa36d63c8e99f25` |
+| `Codex Review / gate` | 101708743613 | `5f79e310733f396716e432a9faa36d63c8e99f25` |
+| `Auto Merge / eligible` | 101708750781 | `5f79e310733f396716e432a9faa36d63c8e99f25` |
+
+Base was `5d3ec2471ce7db414eb60f8d8eaaabbe206a02de`; synthetic candidate was
+`e2143a807c028409cf9d1b2191f459eec140959f`. GitHub Actions enabled native SQUASH at
+10:28:34 UTC. Both custom checks were still pending at 10:28:38; all three required
+checks were successful at 10:28:53. The whole review workflow completed successfully,
+and GitHub merged automatically at **10:29:20 UTC**, producing
+`a7902a4b9676bb01af48ab8109d2df3e2a1dcfe7`. No immediate merge endpoint or manual
+merge was used. No production/deployment workflow was triggered by these token-
+originated test merges. PR #17 remains for manual review; PR #13 was not changed.
+
+Final local validation: clean npm ci, **82 Node tests**, **9 deployment-control
+tests**, CI smoke and synthetic health, actionlint, ShellCheck, YAML, JSON Schema,
+TOML, JavaScript/Python/shell syntax, and production audit passed. All requested
+validators were available. Audit found zero high/critical findings; one existing
+low and one moderate advisory remain. Security inspection confirmed base-controlled
+automatic execution, exact source/merge/base binding, separate read-only reviewer
+and write jobs, no candidate execution with write credentials, no secret-bearing
+logs, and no check/approval bypass. GitHub's separate reads and writes remain
+non-atomic; exact-head mutation binding and branch protections are still required.

@@ -426,7 +426,7 @@ test('snapshot creates pending checks on the source head before discovering the 
     GITHUB_OUTPUT: path.join(dir, 'output'), GITHUB_SHA: base,
     GITHUB_REPOSITORY: 'dexsword/dextech', GITHUB_EVENT_NAME: 'pull_request_target' },
   async (endpoint, method, body) => {
-    if (method === 'POST') { writes.push(body); return { id: 100 + writes.length }; }
+    if (method === 'POST') { writes.push(body); return { ...body, id: 100 + writes.length, conclusion: null }; }
     if (mergeResponse(endpoint)) return mergeResponse(endpoint);
     assert.equal(endpoint, '/repos/dexsword/dextech/pulls/12'); return pr();
   });
@@ -866,14 +866,14 @@ test('snapshot uses the live synthetic merge SHA and never falls back to the eve
     GITHUB_REPOSITORY: 'dexsword/dextech', GITHUB_EVENT_NAME: 'pull_request_target' };
   const writes = [];
   await c.snapshot(values, async (url, method, body) => {
-    if (method === 'POST') { writes.push(body); return { id: 100 + writes.length }; }
+    if (method === 'POST') { writes.push(body); return { ...body, id: 100 + writes.length, conclusion: null }; }
     return mergeResponse(url) || pr();
   });
   assert.ok(writes.every(x => x.head_sha === head && x.head_sha !== merge));
   assert.match(fs.readFileSync(values.GITHUB_OUTPUT, 'utf8'), new RegExp(`merge=${merge}`));
   for (const invalid of [{ merge_commit_sha: null }, { mergeable: null }, { mergeable: false }]) {
-    await assert.rejects(c.snapshot(values, async (url, method) => {
-      if (method === 'POST') return { id: 200 };
+    await assert.rejects(c.snapshot(values, async (url, method, body) => {
+      if (method === 'POST') return { ...body, id: 200, conclusion: null };
       return mergeResponse(url) || { ...pr(), ...invalid };
     }, async () => {}));
   }
@@ -910,7 +910,7 @@ test('snapshot installs pending checks immediately and retries transient merge d
         if (options.method === 'POST') {
           writes.push(JSON.parse(options.body));
           assert.equal(delays.length, 0);
-          result = { id: 100 + writes.length };
+          result = { ...JSON.parse(options.body), id: 100 + writes.length, conclusion: null };
         } else if (endpoint.endsWith('/pulls/12')) {
           reads++;
           if (delays.length === 0 || condition === 'exhausted') {
@@ -1042,4 +1042,45 @@ test('workflow avoids recursive and irrelevant events and separates manual trust
   assert.match(workflow, /workflow_dispatch:/);
   assert.match(workflow, /ref: \$\{\{ needs.snapshot.outputs.control \}\}/);
   assert.doesNotMatch(workflow, /ref: \$\{\{ inputs\./);
+});
+
+test('completed checks are superseded and a non-pending GitHub response stops snapshot', async t => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'dextech-completed-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const values = { ...env(), GITHUB_EVENT_PATH: path.join(dir, 'event'), GITHUB_OUTPUT: path.join(dir, 'output'),
+    GITHUB_SHA: base, GITHUB_REPOSITORY: p.REPOSITORY, GITHUB_EVENT_NAME: 'pull_request_target' };
+  fs.writeFileSync(values.GITHUB_EVENT_PATH, JSON.stringify({ pull_request: pr() }));
+  for (const returnedState of ['in_progress', 'completed']) {
+    const writes = [];
+    const api = async (url, method, body) => {
+      if (url.includes('/check-runs?')) return { total_count: 2, check_runs: ['gate', 'eligible'].map((kind, i) =>
+        ({ ...check(kind), id: 11 + i, status: 'completed', conclusion: 'failure' })) };
+      if (method === 'POST') {
+        writes.push(body);
+        return { ...body, id: 101 + writes.length, status: returnedState,
+          conclusion: returnedState === 'in_progress' ? null : 'failure' };
+      }
+      assert.notEqual(method, 'PATCH', 'do not attempt to reset a completed GitHub check');
+      return mergeResponse(url) || pr();
+    };
+    if (returnedState === 'in_progress') {
+      await c.snapshot(values, api);
+      assert.equal(writes.length, 2);
+    } else await assert.rejects(c.snapshot(values, api), error => c.diagnostic(error).includes('required-checks-not-pending'));
+  }
+});
+
+test('feedback is a safe no-op when auto-merge closes the PR before or during comment lookup', async () => {
+  const managed = { id: 999, user: { login: 'github-actions[bot]', type: 'Bot' },
+    body: '<!-- dextech-codex-review-feedback:v1 -->\nold finding' };
+  for (const closeAt of [1, 2]) {
+    let reads = 0;
+    await c.publishFeedback(env(), async (url, method = 'GET') => {
+      assert.equal(method, 'GET');
+      if (url.endsWith('/pulls/12')) return { ...pr(), state: ++reads >= closeAt ? 'closed' : 'open' };
+      if (url.includes('/comments?')) return [managed];
+      assert.fail('Unexpected request');
+    });
+    assert.equal(reads, closeAt);
+  }
 });

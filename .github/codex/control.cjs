@@ -158,9 +158,10 @@ async function snapshot(env, api, sleep = wait) {
     await activeRun(env, api, number);
     const existing = listed.check_runs.filter(c => c.name === CHECKS[kind] && c.app?.slug === 'github-actions');
     if (existing.length > 1) fail('pending');
-    const check = existing[0];
+    const check = existing[0]?.status === 'in_progress' && existing[0]?.conclusion === null ? existing[0] : null;
     if (check && (!Number.isSafeInteger(check.id) || check.head_sha !== match.head)) fail();
-    // Reclaim the same check on a rerun. Changing ownership makes old receipts invalid.
+    // Reclaim pending checks; supersede completed ones (GitHub retains their conclusion).
+    // Changing ownership makes old receipts invalid.
     const body = { name: CHECKS[kind], status: 'in_progress',
       external_id: checkBinding(env, match),
       details_url: `https://github.com/${REPOSITORY}/actions/runs/${env.GITHUB_RUN_ID}`,
@@ -169,7 +170,8 @@ async function snapshot(env, api, sleep = wait) {
     if (!check) body.head_sha = match.head;
     const result = await api(check ? `/repos/${REPOSITORY}/check-runs/${check.id}` :
       `/repos/${REPOSITORY}/check-runs`, check ? 'PATCH' : 'POST', body);
-    if (!Number.isSafeInteger(result.id)) fail();
+    if (!Number.isSafeInteger(result.id) || result.status !== 'in_progress' || result.conclusion !== null ||
+        result.head_sha !== match.head || result.external_id !== checkBinding(env, match)) fail('pending');
     ids[`${kind}_id`] = result.id;
   }
   match.merge = await discoverMerge(api, match, sleep);
@@ -321,6 +323,7 @@ async function publishFeedback(env, api) {
   const body = feedbackBody(result, match);
   if (body === null) return;
   const pr = await api(`/repos/${REPOSITORY}/pulls/${match.number}`);
+  if (pr.state === 'closed') return; // Native auto-merge may finish before feedback starts.
   if (!policy.sameCandidate(pr, match)) fail();
   const comments = [];
   // Search every page before creating a comment; incomplete lookup fails closed.
@@ -339,6 +342,7 @@ async function publishFeedback(env, api) {
   // Recheck the exact head immediately before the only write. Comment writes
   // have no atomic SHA precondition; the body always labels the reviewed head.
   const current = await api(`/repos/${REPOSITORY}/pulls/${match.number}`);
+  if (current.state === 'closed') return;
   if (!policy.sameCandidate(current, match)) fail();
   if (managed.length === 1) {
     await api(`/repos/${REPOSITORY}/issues/comments/${managed[0].id}`, 'PATCH', { body });
