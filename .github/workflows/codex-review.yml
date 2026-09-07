@@ -45,7 +45,7 @@ jobs:
         run: node control/.github/codex/control.cjs snapshot
 
   eligibility:
-    needs: snapshot
+    needs: [snapshot, disarm]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:
@@ -73,7 +73,7 @@ jobs:
         run: node control/.github/codex/control.cjs classify
 
   review:
-    needs: snapshot
+    needs: [snapshot, disarm]
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     permissions:
@@ -119,7 +119,7 @@ jobs:
 
   disarm:
     if: ${{ always() && needs.snapshot.result == 'success' }}
-    needs: [snapshot, eligibility, review]
+    needs: snapshot
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:
@@ -141,7 +141,7 @@ jobs:
 
   publish:
     if: ${{ always() && needs.snapshot.result == 'success' }}
-    needs: [snapshot, eligibility, review, disarm]
+    needs: [snapshot, eligibility, review, disarm, auto-merge]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:
@@ -170,6 +170,11 @@ jobs:
           DISARM_RESULT: ${{ needs.disarm.result }}
           ELIGIBILITY_RESULT: ${{ needs.eligibility.result }}
           ELIGIBLE: ${{ needs.eligibility.outputs.eligible }}
+          PR_DRAFT: ${{ github.event.pull_request.draft }}
+          AUTO_MERGE_RESULT: ${{ needs.auto-merge.result }}
+          CONFIRMED_HEAD: ${{ needs.auto-merge.outputs.confirmed_head }}
+          CONFIRMED_BASE: ${{ needs.auto-merge.outputs.confirmed_base }}
+          CONFIRMED_RUN: ${{ needs.auto-merge.outputs.confirmed_run }}
         run: node control/.github/codex/control.cjs publish
 
   feedback:
@@ -198,24 +203,30 @@ jobs:
 
   auto-merge:
     if: >-
-      needs.publish.outputs.passed == 'true' &&
-      needs.publish.outputs.eligible == 'true' &&
+      always() && needs.snapshot.result == 'success' &&
+      needs.disarm.result == 'success' && needs.review.result == 'success' &&
+      needs.eligibility.result == 'success' && needs.eligibility.outputs.eligible == 'true' &&
       github.event.pull_request.draft == false &&
       github.event.pull_request.head.repo.full_name == 'dexsword/dextech'
-    needs: [snapshot, publish]
+    needs: [snapshot, disarm, eligibility, review]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:
       contents: write
       pull-requests: write
       checks: read
+    outputs:
+      confirmed_head: ${{ steps.request.outputs.confirmed_head }}
+      confirmed_base: ${{ steps.request.outputs.confirmed_base }}
+      confirmed_run: ${{ steps.request.outputs.confirmed_run }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           ref: ${{ needs.snapshot.outputs.base }}
           persist-credentials: false
           path: control
-      - name: Revalidate current PR and request native squash auto-merge
+      - name: Request and confirm native squash auto-merge while checks are pending
+        id: request
         env:
           GH_TOKEN: ${{ github.token }}
           HEAD_SHA: ${{ needs.snapshot.outputs.head }}
@@ -223,6 +234,9 @@ jobs:
           PR_NUMBER: ${{ needs.snapshot.outputs.number }}
           GATE_ID: ${{ needs.snapshot.outputs.gate_id }}
           ELIGIBLE_ID: ${{ needs.snapshot.outputs.eligible_id }}
-          PASSED: ${{ needs.publish.outputs.passed }}
-          ELIGIBLE: ${{ needs.publish.outputs.eligible }}
+          REVIEW_JSON: ${{ needs.review.outputs.result }}
+          REVIEW_RESULT: ${{ needs.review.result }}
+          DISARM_RESULT: ${{ needs.disarm.result }}
+          ELIGIBILITY_RESULT: ${{ needs.eligibility.result }}
+          ELIGIBLE: ${{ needs.eligibility.outputs.eligible }}
         run: node control/.github/codex/control.cjs request

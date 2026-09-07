@@ -8,7 +8,35 @@ const policy = require('./policy.cjs');
 const { REPOSITORY, CHECKS, sha } = policy;
 const MAX_PROMPT = 600000;
 const FEEDBACK_MARKER = '<!-- dextech-codex-review-feedback:v1 -->';
-const fail = () => { throw new Error('Review control rejected the operation.'); };
+const DIAGNOSTICS = Object.freeze({
+  permission: 'permission-or-repository-setting-rejection',
+  mergeable: 'pr-already-immediately-mergeable',
+  stale: 'stale-head-or-base',
+  inactive: 'draft-or-closed-pr',
+  unavailable: 'auto-merge-unavailable',
+  unexpected: 'unexpected-github-response',
+  invalid: 'invalid-review-or-eligibility',
+  pending: 'required-checks-not-pending'
+});
+class ControlFailure extends Error {
+  constructor(category) { super('Review control rejected the operation.'); this.category = category; }
+}
+const fail = (category = 'unexpected') => { throw new ControlFailure(category); };
+function diagnostic(error) {
+  const category = error instanceof ControlFailure && Object.hasOwn(DIAGNOSTICS, error.category) ? error.category : 'unexpected';
+  return `Review control failed closed: ${DIAGNOSTICS[category]}.`;
+}
+
+function apiFailure(errors) {
+  // Inspect only to select a fixed category. Never return/log any response text.
+  if (!Array.isArray(errors)) fail();
+  if (errors.some(e => ['FORBIDDEN', 'UNAUTHORIZED'].includes(e?.type) ||
+      /auto.?merge.*(?:disabled|not allowed)|not permitted|resource not accessible/i.test(e?.message || ''))) fail('permission');
+  if (errors.some(e => /clean status|already.*mergeable/i.test(e?.message || ''))) fail('mergeable');
+  if (errors.some(e => /head.*(?:changed|match)|expectedHeadOid/i.test(e?.message || ''))) fail('stale');
+  if (errors.some(e => /auto.?merge.*(?:unavailable|not enabled)|not eligible for auto.?merge/i.test(e?.message || ''))) fail('unavailable');
+  fail();
+}
 
 function expected(env) {
   if (!sha(env.HEAD_SHA) || !sha(env.BASE_SHA) || !/^[1-9][0-9]*$/.test(env.PR_NUMBER)) fail();
@@ -35,9 +63,11 @@ function client(env, fetcher = fetch) {
       redirect: 'error', signal: AbortSignal.timeout(20000)
     });
     // Never log response bodies, exception text, headers or credential values.
-    if (!response.ok) fail();
+    if ([401, 403].includes(response.status)) fail('permission');
+    if (response.status === 404) fail('unavailable');
     const result = await response.json();
-    if (result.errors) fail();
+    if (result?.errors) apiFailure(result.errors);
+    if (!response.ok || !result || typeof result !== 'object') fail();
     return result;
   };
 }
@@ -144,29 +174,33 @@ function prepare(cwd, match, env) {
 
 async function publish(env, api) {
   const match = expected(env);
-  const passed = env.DISARM_RESULT === 'success' && policy.reviewPass(env.REVIEW_JSON, env.REVIEW_RESULT);
-  const classificationOK = env.ELIGIBILITY_RESULT === 'success';
+  // Validate BOTH checks before either write. Pending checks are the latch that
+  // lets native auto-merge wait for GitHub branch protection.
+  const ids = await pendingChecks(env, api, match);
+  const pr = await currentCandidate(api, match);
+  const reviewOK = env.DISARM_RESULT === 'success' && policy.reviewPass(env.REVIEW_JSON, env.REVIEW_RESULT);
+  const classificationOK = env.ELIGIBILITY_RESULT === 'success' && ['true', 'false'].includes(env.ELIGIBLE);
   const eligible = classificationOK && env.ELIGIBLE === 'true';
+  const manual = env.AUTO_MERGE_RESULT === 'skipped' && classificationOK && (!eligible || (env.PR_DRAFT === 'true' && pr.draft === true));
+  const confirmed = env.AUTO_MERGE_RESULT === 'success' &&
+    env.CONFIRMED_HEAD === match.head && env.CONFIRMED_BASE === match.base &&
+    env.CONFIRMED_RUN === binding(env, match.head) && pr.draft === false &&
+    pr.auto_merge?.merge_method === 'squash';
+  const passed = reviewOK && classificationOK && (manual || confirmed);
   for (const kind of ['gate', 'eligible']) {
-    const id = env[kind === 'gate' ? 'GATE_ID' : 'ELIGIBLE_ID'];
-    if (!/^[1-9][0-9]*$/.test(id)) fail();
-    const check = await api(`/repos/${REPOSITORY}/check-runs/${id}`);
-    if (check.name !== CHECKS[kind] || check.head_sha !== match.head || check.external_id !== binding(env, match.head)) fail();
     const conclusion = kind === 'gate' ? (passed ? 'success' : 'failure') :
-      (classificationOK ? (eligible ? 'success' : 'neutral') : 'failure');
-    await api(`/repos/${REPOSITORY}/check-runs/${id}`, 'PATCH', {
+      (classificationOK && !eligible ? 'neutral' : (passed ? 'success' : 'failure'));
+    await api(`/repos/${REPOSITORY}/check-runs/${ids[kind]}`, 'PATCH', {
       status: 'completed', conclusion,
       output: { title: kind === 'gate' ? (passed ? 'Review passed' : 'Review failed closed') :
-        (eligible ? 'Eligible for guarded auto-merge' : 'Manual review required'),
+        (eligible && passed ? 'Eligible for guarded auto-merge' : 'Manual review required'),
       summary: `Exact head: ${match.head}. ` + (kind === 'gate' ?
-        'Requires valid structured output, confidence >= 0.95, no blocking findings, and successful review execution.' :
+        'Requires a valid passing review and, for eligible ready PRs, confirmed native squash auto-merge before successful checks.' :
         'Only the trusted base allowlist authorizes auto-merge. A neutral result is intentionally not a CI failure.') }
     });
   }
   output(env, { passed, eligible });
-  // The PR-head check above is the authoritative review outcome. Also fail this
-  // workflow job visibly; never echo model output or raw exception contents.
-  if (!passed || !classificationOK) fail();
+  if (!passed || !classificationOK) fail('invalid');
 }
 
 function feedbackBody(result, match) {
@@ -241,32 +275,52 @@ async function disarmAutoMerge(env, api) {
   if (result.data?.disablePullRequestAutoMerge?.pullRequest?.id !== pr.node_id) fail();
 }
 
-async function requestAutoMerge(env, api) {
-  const match = expected(env);
-  if (env.PASSED !== 'true' || env.ELIGIBLE !== 'true') fail();
+async function pendingChecks(env, api, match) {
+  const ids = {};
   for (const kind of ['gate', 'eligible']) {
     const id = env[kind === 'gate' ? 'GATE_ID' : 'ELIGIBLE_ID'];
     if (!/^[1-9][0-9]*$/.test(id)) fail();
     const check = await api(`/repos/${REPOSITORY}/check-runs/${id}`);
     if (check.name !== CHECKS[kind] || check.head_sha !== match.head ||
-        check.external_id !== binding(env, match.head) || check.app?.slug !== 'github-actions' ||
-        check.status !== 'completed' || check.conclusion !== 'success') fail();
+        check.external_id !== binding(env, match.head) || check.app?.slug !== 'github-actions') fail('stale');
+    if (check.status !== 'in_progress' || check.conclusion !== null) fail('pending');
+    ids[kind] = id;
   }
+  return ids;
+}
+
+async function currentCandidate(api, match, ready = false) {
   const main = await api(`/repos/${REPOSITORY}/git/ref/heads/main`);
-  if (main.object?.sha !== match.base) fail();
-  // This read is immediately before the mutation. GitHub also atomically checks
-  // expectedHeadOid, preventing an update between this read and the request.
+  if (main.object?.sha !== match.base) fail('stale');
   const pr = await api(`/repos/${REPOSITORY}/pulls/${match.number}`);
-  if (!policy.mayRequest(pr, match, true, true) || typeof pr.node_id !== 'string') fail();
+  if (pr.state !== 'open' || (ready && pr.draft !== false)) fail('inactive');
+  if (!policy.sameCandidate(pr, match) || typeof pr.node_id !== 'string') fail('stale');
+  return pr;
+}
+
+async function requestAutoMerge(env, api) {
+  const match = expected(env);
+  if (env.DISARM_RESULT !== 'success' || env.ELIGIBILITY_RESULT !== 'success' ||
+      env.ELIGIBLE !== 'true' || !policy.reviewPass(env.REVIEW_JSON, env.REVIEW_RESULT)) fail('invalid');
+  await pendingChecks(env, api, match);
+  // The live PR read is immediately before the mutation. expectedHeadOid also
+  // binds the head atomically inside GitHub; strict branch protection guards main.
+  const pr = await currentCandidate(api, match, true);
   if (pr.auto_merge) {
-    if (pr.auto_merge.merge_method !== 'squash') fail();
-    return; // Already enabled; do not rewrite any existing request.
+    if (pr.auto_merge.merge_method !== 'squash') fail('unavailable');
+  } else {
+    const result = await api('/graphql', 'POST', {
+      query: 'mutation($id: ID!, $head: GitObjectID!) { enablePullRequestAutoMerge(input: {pullRequestId: $id, expectedHeadOid: $head, mergeMethod: SQUASH}) { pullRequest { id headRefOid autoMergeRequest { mergeMethod } } } }',
+      variables: { id: pr.node_id, head: match.head }
+    });
+    const enabled = result.data?.enablePullRequestAutoMerge?.pullRequest;
+    if (enabled?.id !== pr.node_id || enabled.headRefOid !== match.head ||
+        enabled.autoMergeRequest?.mergeMethod !== 'SQUASH') fail('unexpected');
   }
-  const result = await api('/graphql', 'POST', {
-    query: 'mutation($id: ID!, $head: GitObjectID!) { enablePullRequestAutoMerge(input: {pullRequestId: $id, expectedHeadOid: $head, mergeMethod: SQUASH}) { pullRequest { id } } }',
-    variables: { id: pr.node_id, head: match.head }
-  });
-  if (result.data?.enablePullRequestAutoMerge?.pullRequest?.id !== pr.node_id) fail();
+  // Require a fresh independent read-back, including the idempotent path.
+  const confirmed = await currentCandidate(api, match, true);
+  if (confirmed.node_id !== pr.node_id || confirmed.auto_merge?.merge_method !== 'squash') fail('unavailable');
+  return { confirmed_head: match.head, confirmed_base: match.base, confirmed_run: binding(env, match.head) };
 }
 
 async function main(env) {
@@ -277,15 +331,15 @@ async function main(env) {
     case 'publish': return publish(env, client(env));
     case 'feedback': return publishFeedback(env, client(env));
     case 'disarm': return disarmAutoMerge(env, client(env));
-    case 'request': return requestAutoMerge(env, client(env));
+    case 'request': return output(env, await requestAutoMerge(env, client(env)));
     default: fail();
   }
 }
 
-if (require.main === module) main(process.env).catch(() => {
-  console.error('Review control failed closed; untrusted output and error details suppressed.');
+if (require.main === module) main(process.env).catch(error => {
+  console.error(diagnostic(error));
   process.exitCode = 1;
 });
 
 module.exports = { expected, client, snapshot, candidate, readBlob, classifyCandidate, prepare,
-  publish, feedbackBody, publishFeedback, disarmAutoMerge, requestAutoMerge };
+  publish, diagnostic, feedbackBody, publishFeedback, disarmAutoMerge, requestAutoMerge };
