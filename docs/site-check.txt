@@ -2,3 +2,4 @@ Website changes are reviewed through pull requests and checked before merging.
 Checks apply to the exact proposed commit.
 Successful checks remain visible on the reviewed source commit.
 Review rules are maintained on the protected base branch.
+Required review conversations are resolved before merging.
