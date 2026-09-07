@@ -32,3 +32,5 @@ jobs:
           node-version: '22'
       - name: Clean install, complete tests and CI checks
         run: bash scripts/deployment-checks.sh
+      - name: Audit production dependencies
+        run: npm audit --omit=dev --audit-level=high
