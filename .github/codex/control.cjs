@@ -235,7 +235,14 @@ function prepare(cwd, match, env) {
   if (!rules?.trim()) fail();
   const data = { repository: REPOSITORY, base: match.base, head: match.head, merge: match.merge,
     changes: files.map(file => ({ file, before: readBlob(cwd, match.base, file), after: readBlob(cwd, match.head, file) })), context: [] };
-  for (const file of ['server.js', 'script.js', 'index.html', 'package.json', 'test/server.test.js', 'test/ui.test.js']) {
+  // Give control reviews their actual unchanged dependencies, rather than a
+  // large unrelated application context. Every changed file stays complete.
+  const controlChange = files.some(file => file.startsWith('.github/codex/') ||
+    file === '.github/workflows/codex-review.yml' || file === 'test/codex-review.test.js');
+  const context = controlChange ? ['.github/codex/policy.cjs', '.github/codex/review.schema.json',
+    '.github/codex/config.toml', '.github/workflows/ci.yml', 'package.json'] :
+    ['server.js', 'script.js', 'index.html', 'package.json', 'test/server.test.js', 'test/ui.test.js'];
+  for (const file of context) {
     if (!files.includes(file)) data.context.push({ file, content: readBlob(cwd, match.head, file) });
   }
   const prompt = fs.readFileSync(path.join(__dirname, 'review.md'), 'utf8') + '\nTrusted Code Review Rules:\n' +

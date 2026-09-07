@@ -218,7 +218,7 @@ and GitHub merged automatically at **10:29:20 UTC**, producing
 merge was used. No production/deployment workflow was triggered by these token-
 originated test merges. PR #17 remains for manual review; PR #13 was not changed.
 
-Final local validation: clean npm ci, **83 Node tests**, **9 deployment-control
+Final local validation: clean npm ci, **84 Node tests**, **9 deployment-control
 tests**, CI smoke and synthetic health, actionlint, ShellCheck, YAML, JSON Schema,
 TOML, JavaScript/Python/shell syntax, and production audit passed. All requested
 validators were available. Audit found zero high/critical findings; one existing
@@ -248,3 +248,10 @@ GitHub Actions enabled native SQUASH at **10:49:16 UTC** while the custom checks
 were still pending; GitHub automatically merged at **10:49:36 UTC** as
 `95d7244c06587e73d8c7a5d8ba4fc381af229392`. This is the final implementation's
 end-to-end validation, not a mock. The production workflow has no dispatch path.
+
+Control-change review packets include their unchanged policy, output schema,
+configuration and CI dependencies as untrusted data. Unrelated application context
+is reserved for application changes. All changed files remain complete before/after
+Git blobs; no patch is truncated, no candidate instructions become trusted, and
+no candidate scripts are executed. This improves relevance for large control
+reviews without changing the confidence threshold or authorization conditions.
