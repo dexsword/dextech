@@ -1641,7 +1641,7 @@ test('compatibility publication accepts the completed native gate only after suc
 });
 
 function draftSnapshotFixture(t, { action = 'opened', current = { ...pr(), draft: true }, eventPR = current,
-  workflowSha = base, rejectRevocation = false, keepRequest = false, obsolete = false } = {}) {
+  workflowSha = base, rejectRevocation = false, keepRequest = false, obsolete = false, legacy = true, priorChecks = [] } = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'dextech-draft-review-'));
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
   const values = { ...env(), GITHUB_EVENT_PATH: path.join(dir, 'event.json'), GITHUB_OUTPUT: path.join(dir, 'output'),
@@ -1651,9 +1651,25 @@ function draftSnapshotFixture(t, { action = 'opened', current = { ...pr(), draft
   fs.writeFileSync(values.GITHUB_EVENT_PATH, JSON.stringify(event));
   current = structuredClone(current);
   const calls = [];
+  const checks = structuredClone(priorChecks);
   const api = async (url, method = 'GET', body) => {
     calls.push({ url, method, body });
     if (url.endsWith('/pulls/12')) return structuredClone(current);
+    if (url.endsWith('/rules/branches/main')) return [{ type: 'required_status_checks', parameters: {
+      strict_required_status_checks_policy: true, required_status_checks: ['checks', ...(legacy ? Object.values(p.CHECKS) : [p.NATIVE_GATE])]
+        .map(context => ({ context, integration_id: 15368 })) } }];
+    if (url.includes('/commits/')) return { check_runs: structuredClone(checks), total_count: checks.length };
+    if (url.endsWith('/check-runs') && method === 'POST') {
+      const check = { ...body, id: 100 + checks.length, conclusion: null, app: { slug: 'github-actions' } };
+      checks.push(check);
+      return structuredClone(check);
+    }
+    if (/\/check-runs\/\d+$/.test(url)) {
+      const check = checks.find(c => c.id === Number(url.split('/').at(-1)));
+      assert.ok(check);
+      if (method === 'PATCH') Object.assign(check, body);
+      return structuredClone(check);
+    }
     if (url === '/graphql') {
       assert.match(body.query, /disablePullRequestAutoMerge/);
       if (rejectRevocation) throw new Error('Synthetic rejected revocation');
@@ -1667,9 +1683,9 @@ function draftSnapshotFixture(t, { action = 'opened', current = { ...pr(), draft
       }
       return result;
     }
-    assert.fail(`Draft cleanup must not access merge discovery, CI, checks or classification: ${url}`);
+    assert.fail(`Draft cleanup must not access merge discovery, CI or classification: ${url}`);
   };
-  return { values, calls, api, current, output: () => fs.existsSync(values.GITHUB_OUTPUT) ? fs.readFileSync(values.GITHUB_OUTPUT, 'utf8') : '' };
+  return { values, calls, api, current, checks, output: () => fs.existsSync(values.GITHUB_OUTPUT) ? fs.readFileSync(values.GITHUB_OUTPUT, 'utf8') : '' };
 }
 
 test('draft open, update, reopen, retarget and conversion only disarm and defer review', async t => {
@@ -1681,9 +1697,13 @@ test('draft open, update, reopen, retarget and conversion only disarm and defer 
       await c.snapshot(fixture.values, fixture.api, () => assert.fail('Draft must not wait for merge discovery'));
       assert.equal(fixture.output(), 'active=false\ndraft=true\n');
       assert.equal(fixture.current.auto_merge, null);
-      assert.equal(fixture.calls.filter(c => c.method !== 'GET').length, armed ? 1 : 0);
-      assert.equal(fixture.calls.some(c => /check-runs|git\//.test(c.url)), false);
-      if (armed) assert.ok(fixture.calls.at(-1).url.endsWith('/pulls/12'), 'Revocation has an independent read-back');
+      assert.equal(fixture.calls.filter(c => c.method !== 'GET').length, armed ? 3 : 2);
+      assert.equal(fixture.calls.some(c => /git\//.test(c.url)), false);
+      assert.ok(fixture.checks.every(c => c.status === 'in_progress' && c.conclusion === null));
+      if (armed) {
+        const mutation = fixture.calls.findIndex(c => c.url === '/graphql');
+        assert.ok(fixture.calls[mutation + 1].url.endsWith('/pulls/12'), 'Revocation has an independent read-back');
+      }
     }
   }
 });
@@ -1791,4 +1811,27 @@ test('workflow skips draft key-bearing work without emitting a skipped required 
   }
   assert.match(workflow, /types: \[opened, synchronize, reopened, ready_for_review, converted_to_draft, closed, edited\]/);
   assert.match(workflow, /cancel-in-progress: true/);
+});
+
+test('draft cleanup supersedes passing legacy results before readiness on the same SHA', async t => {
+  const priorChecks = Object.values(p.CHECKS).map((name, index) => ({ id: index + 1, name, head_sha: head,
+    app: { slug: 'github-actions' }, status: 'completed', conclusion: 'success' }));
+  const fixture = draftSnapshotFixture(t, { action: 'converted_to_draft', priorChecks });
+  await c.snapshot(fixture.values, fixture.api);
+  for (const name of Object.values(p.CHECKS)) {
+    const required = fixture.checks.filter(c => c.name === name);
+    assert.equal(required.length, 1);
+    assert.equal(required[0].status, 'in_progress');
+    assert.equal(required[0].conclusion, null);
+    assert.ok(fixture.checks.some(c => c.name.startsWith(`${name} (superseded `) && c.conclusion === 'success'));
+  }
+  assert.equal(fixture.calls.some(c => c.body?.conclusion), false);
+  assert.equal(fixture.output(), 'active=false\ndraft=true\n');
+});
+
+test('native-only draft cleanup does not create or rewrite custom checks', async t => {
+  const fixture = draftSnapshotFixture(t, { legacy: false });
+  await c.snapshot(fixture.values, fixture.api);
+  assert.equal(fixture.calls.some(c => /check-runs/.test(c.url)), false);
+  assert.equal(fixture.output(), 'active=false\ndraft=true\n');
 });

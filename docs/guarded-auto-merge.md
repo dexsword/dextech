@@ -48,7 +48,8 @@ is not proof that GitHub accepted a required result.
 
 1. `snapshot` validates the live same-repository PR, verifies ownership of the
    run, and revokes any previous native auto-merge request. Draft events stop
-   here with `active=false`; they need no merge candidate or up-to-date base.
+   here with `active=false` after resetting required legacy checks to pending;
+   they need no merge candidate or up-to-date base.
    Ready PRs additionally validate current main and record source, base and
    synthetic merge commits. In migration mode they also create pending legacy
    checks. Snapshot never writes the native gate.
@@ -79,8 +80,10 @@ the same per-PR concurrency group to cancel obsolete work, and snapshot revokes
 the previous auto-merge request even if the draft is behind main or conflicted.
 Failed revocation remains a failed cleanup run.
 
-The skipped final job is named `Draft PR`, never `merge-gate`. Existing results
-are not rewritten as successful or neutral to accommodate drafts. A
+The skipped final job is named `Draft PR`, never `merge-gate`. While legacy
+checks are required, cleanup replaces earlier results with pending checks and
+preserves the old conclusions under historical names. It never publishes
+success or neutral to accommodate drafts. A
 `ready_for_review` event starts a fresh full evaluation, even on the same source
 SHA. A delayed draft event cannot start AI review if the PR has since become
 ready, and a ready-event run that discovers a live draft cannot pass either

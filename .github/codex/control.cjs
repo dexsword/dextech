@@ -169,6 +169,52 @@ async function nativeGate(env, api, match, allowCompleted = false) {
   return check.id;
 }
 
+// Draft cleanup and ready review share the same fail-closed invalidation.
+async function resetLegacyChecks(env, api, match, config) {
+  const ids = {};
+  const listed = config.legacy ? await api(`/repos/${REPOSITORY}/commits/${match.head}/check-runs?per_page=100&filter=all`) :
+    { check_runs: [], total_count: 0 };
+  if (!Array.isArray(listed.check_runs) || listed.total_count > 100) fail();
+  for (const kind of config.legacy ? ['gate', 'eligible'] : []) {
+    const live = await api(`/repos/${REPOSITORY}/pulls/${match.number}`);
+    if (!policy.sameCandidate(live, match)) fail('stale');
+    await activeRun(env, api, match.number);
+    const existing = listed.check_runs.filter(c => c.name === CHECKS[kind] && c.app?.slug === 'github-actions');
+    if (existing.some(c => !Number.isSafeInteger(c.id) || c.head_sha !== match.head)) fail();
+    const check = existing.filter(c => c.status === 'in_progress' && c.conclusion === null)
+      .sort((a, b) => b.id - a.id)[0];
+    if (check && (!Number.isSafeInteger(check.id) || check.head_sha !== match.head)) fail();
+    // Reclaim pending checks; supersede completed ones (GitHub retains their conclusion).
+    // Changing ownership makes old receipts invalid.
+    const body = { name: CHECKS[kind], status: 'in_progress',
+      external_id: checkBinding(env, match),
+      details_url: `https://github.com/${REPOSITORY}/actions/runs/${env.GITHUB_RUN_ID}`,
+      output: { title: 'Trusted review pending for this exact source head',
+        summary: 'Incomplete review, CI, or authorization cannot enable guarded merging.' } };
+    if (!check) body.head_sha = match.head;
+    const result = await api(check ? `/repos/${REPOSITORY}/check-runs/${check.id}` :
+      `/repos/${REPOSITORY}/check-runs`, check ? 'PATCH' : 'POST', body);
+    if (!Number.isSafeInteger(result.id) || result.status !== 'in_progress' || result.conclusion !== null ||
+        result.head_sha !== match.head || result.external_id !== checkBinding(env, match)) fail('pending');
+    ids[`${kind}_id`] = result.id;
+    // Duplicate completed names can remain required even when the latest passes.
+    // First confirm the replacement is pending; then preserve old results under
+    // historical names. Never rewrite a native CI check or manufacture success.
+    for (const old of existing.filter(c => c.id !== result.id)) {
+      if (!policy.sameCandidate(await api(`/repos/${REPOSITORY}/pulls/${match.number}`), match)) fail('stale');
+      await activeRun(env, api, match.number);
+      const pending = await api(`/repos/${REPOSITORY}/check-runs/${result.id}`);
+      if (pending.external_id !== checkBinding(env, match) || pending.head_sha !== match.head ||
+          pending.status !== 'in_progress' || pending.conclusion !== null) fail('pending');
+      const historical = await api(`/repos/${REPOSITORY}/check-runs/${old.id}`, 'PATCH',
+        { name: `${CHECKS[kind]} (superseded ${old.id})` });
+      if (historical.id !== old.id || historical.name !== `${CHECKS[kind]} (superseded ${old.id})` ||
+          historical.head_sha !== match.head || historical.conclusion !== old.conclusion) fail('pending');
+    }
+  }
+  return ids;
+}
+
 async function snapshot(env, api, sleep = wait) {
   const event = JSON.parse(fs.readFileSync(env.GITHUB_EVENT_PATH, 'utf8'));
   if (env.GITHUB_REPOSITORY !== REPOSITORY) fail();
@@ -194,6 +240,8 @@ async function snapshot(env, api, sleep = wait) {
     if (!policy.sameCandidate(pr, { number, head: event.pull_request.head.sha, base: pr.base?.sha })) fail('stale');
     await activeRun(env, api, number);
     await revoke(pr, api);
+    const config = await gateConfiguration(api);
+    await resetLegacyChecks(env, api, { number, head: pr.head.sha, base: pr.base.sha }, config);
     return output(env, { active: false, draft: true });
   }
   const main = await api(`/repos/${REPOSITORY}/git/ref/heads/main`);
@@ -206,47 +254,7 @@ async function snapshot(env, api, sleep = wait) {
   await revoke(pr, api);
   if (pr.state !== 'open') return output(env, { active: false });
   const config = await gateConfiguration(api);
-  const ids = {};
-  const listed = config.legacy ? await api(`/repos/${REPOSITORY}/commits/${match.head}/check-runs?per_page=100&filter=all`) :
-    { check_runs: [], total_count: 0 };
-  if (!Array.isArray(listed.check_runs) || listed.total_count > 100) fail();
-  for (const kind of config.legacy ? ['gate', 'eligible'] : []) {
-    const live = await api(`/repos/${REPOSITORY}/pulls/${number}`);
-    if (!policy.sameCandidate(live, match)) fail('stale');
-    await activeRun(env, api, number);
-    const existing = listed.check_runs.filter(c => c.name === CHECKS[kind] && c.app?.slug === 'github-actions');
-    if (existing.some(c => !Number.isSafeInteger(c.id) || c.head_sha !== match.head)) fail();
-    const check = existing.filter(c => c.status === 'in_progress' && c.conclusion === null)
-      .sort((a, b) => b.id - a.id)[0];
-    if (check && (!Number.isSafeInteger(check.id) || check.head_sha !== match.head)) fail();
-    // Reclaim pending checks; supersede completed ones (GitHub retains their conclusion).
-    // Changing ownership makes old receipts invalid.
-    const body = { name: CHECKS[kind], status: 'in_progress',
-      external_id: checkBinding(env, match),
-      details_url: `https://github.com/${REPOSITORY}/actions/runs/${env.GITHUB_RUN_ID}`,
-      output: { title: 'Trusted review pending for this exact source head',
-        summary: 'Incomplete review, CI, or authorization cannot enable guarded merging.' } };
-    if (!check) body.head_sha = match.head;
-    const result = await api(check ? `/repos/${REPOSITORY}/check-runs/${check.id}` :
-      `/repos/${REPOSITORY}/check-runs`, check ? 'PATCH' : 'POST', body);
-    if (!Number.isSafeInteger(result.id) || result.status !== 'in_progress' || result.conclusion !== null ||
-        result.head_sha !== match.head || result.external_id !== checkBinding(env, match)) fail('pending');
-    ids[`${kind}_id`] = result.id;
-    // Duplicate completed names can remain required even when the latest passes.
-    // First confirm the replacement is pending; then preserve old results under
-    // historical names. Never rewrite a native CI check or manufacture success.
-    for (const old of existing.filter(c => c.id !== result.id)) {
-      if (!policy.sameCandidate(await api(`/repos/${REPOSITORY}/pulls/${number}`), match)) fail('stale');
-      await activeRun(env, api, number);
-      const pending = await api(`/repos/${REPOSITORY}/check-runs/${result.id}`);
-      if (pending.external_id !== checkBinding(env, match) || pending.head_sha !== match.head ||
-          pending.status !== 'in_progress' || pending.conclusion !== null) fail('pending');
-      const historical = await api(`/repos/${REPOSITORY}/check-runs/${old.id}`, 'PATCH',
-        { name: `${CHECKS[kind]} (superseded ${old.id})` });
-      if (historical.id !== old.id || historical.name !== `${CHECKS[kind]} (superseded ${old.id})` ||
-          historical.head_sha !== match.head || historical.conclusion !== old.conclusion) fail('pending');
-    }
-  }
+  const ids = await resetLegacyChecks(env, api, match, config);
   match.merge = await discoverMerge(api, match, sleep);
   output(env, { active: true, draft: pr.draft, legacy: config.legacy,
     head: match.head, base: match.base, merge: match.merge, number, ...ids });
