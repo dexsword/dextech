@@ -42,6 +42,9 @@ CLEAN_ENV = {'PATH': str(Path(NODE).parent) + ':/usr/sbin:/usr/bin:/sbin:/bin',
 RUNTIME = frozenset('server.js package.json package-lock.json index.html support.html '
                     'privacy.html terms.html admin.html cancel.html script.js style.css '
                     'bg3.jpeg btc.jpg eth.jpg favicon.png paypal.jpg sol.jpg '
+                    'computer-help-henderson.html wifi-setup-henderson.html '
+                    'small-business-tech-support-henderson.html custom-pc-builds-henderson.html '
+                    'robots.txt sitemap.xml '
                     'images/preview.jpg .well-known/brave-rewards-verification.txt'.split())
 SHA_RE = re.compile(r'[0-9a-f]{40}', re.ASCII)
 ERROR_RE = re.compile(r'\berror\b|\bfatal\b|uncaught|unhandled|EACCES|EADDRINUSE|'

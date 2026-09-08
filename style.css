@@ -1644,3 +1644,20 @@ button {
     grid-template-columns: repeat(2, 1fr);
   }
 }
+
+/* Service detail pages and the no-appointment quote path. */
+.seo-section { padding: 3rem 0; }
+.seo-copy { max-width: 850px; }
+.seo-copy h2, .seo-copy h3 { margin: 1.5rem 0 0.75rem; }
+.seo-copy p { margin-bottom: 1rem; }
+.service-detail-links { display: grid; gap: 1rem; margin: 1.5rem 0; }
+.service-detail-links a { display: block; padding: 1rem; border: 1px solid #cbd5e1; border-radius: 0.75rem; }
+.service-page { padding: 8rem 0 4rem; }
+.service-page h1 { font-size: clamp(2rem, 5vw, 3.25rem); line-height: 1.2; margin: 1.5rem 0; }
+.service-intro { font-size: 1.2rem; }
+.service-page section { margin: 2rem 0; }
+.quote-panel { background: var(--color-white); border: 1px solid #cbd5e1; border-radius: 1rem; padding: clamp(1rem, 4vw, 2rem); margin: 2rem auto 3rem; max-width: 750px; scroll-margin-top: 6rem; }
+.quote-panel p { margin: 1rem 0; overflow-wrap: anywhere; }
+.quote-trap { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
+#quoteStatus { font-weight: 600; }
+@media (min-width: 640px) { .service-detail-links { grid-template-columns: repeat(2, minmax(0, 1fr)); } }

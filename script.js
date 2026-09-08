@@ -66,6 +66,7 @@ document.addEventListener('DOMContentLoaded', function() {
   });
 
   initBookingWidget();
+  initQuoteForm();
 });
 
 function getStripeUrlForService(service, root) {
@@ -481,4 +482,49 @@ function showCopyFeedback(buttonElement, message) {
 
 function getCheckIcon() {
   return '<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>';
+}
+
+function initQuoteForm() {
+  const form = document.getElementById('quoteForm');
+  if (!form) return;
+  const method = document.getElementById('quoteMethod');
+  const contact = document.getElementById('quoteContact');
+  const label = document.getElementById('quoteContactLabel');
+  const status = document.getElementById('quoteStatus');
+  const button = form.querySelector('button[type="submit"]');
+  function updateContactField() {
+    const isEmail = method.value === 'email';
+    contact.type = isEmail ? 'email' : 'tel';
+    contact.autocomplete = isEmail ? 'email' : 'tel';
+    label.textContent = isEmail ? 'Email address' : 'Phone number';
+  }
+  method.addEventListener('change', updateContactField);
+  form.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    if (button.disabled || !form.reportValidity()) return;
+    button.disabled = true;
+    status.textContent = 'Sending your request…';
+    try {
+      const response = await fetch('/api/inquiries', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: document.getElementById('quoteName').value,
+          method: method.value,
+          contact: contact.value,
+          message: document.getElementById('quoteMessage').value,
+          website: document.getElementById('quoteWebsite').value,
+        }),
+      });
+      const data = await response.json();
+      if (!response.ok || data.success !== true) throw new Error('Quote request failed');
+      form.reset();
+      updateContactField();
+      status.textContent = 'Your quote request has been sent. I will follow up using your preferred contact method.';
+    } catch (_) {
+      status.textContent = 'Your request could not be sent. Please try again, call (845) 596-1708, or email dextech.me@gmail.com.';
+    } finally {
+      button.disabled = false;
+    }
+  });
 }

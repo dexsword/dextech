@@ -71,6 +71,23 @@ class Controls(unittest.TestCase):
             with self.assertRaises(ValueError):
                 s.parse(args, 'deploy ' + SHA)
 
+    def test_runtime_archive_includes_seo_assets_and_rejects_missing_asset(self):
+        root = Path(__file__).resolve().parents[2]
+        for missing in [None, 'sitemap.xml']:
+            stream = io.BytesIO()
+            with tarfile.open(fileobj=stream, mode='w') as tar:
+                for filename in sorted(d.RUNTIME):
+                    if filename != missing:
+                        tar.add(root / filename, arcname=filename)
+            with tempfile.TemporaryDirectory() as tmp:
+                if missing:
+                    with self.assertRaises(RuntimeError):
+                        d.unpack_runtime(stream.getvalue(), Path(tmp))
+                else:
+                    d.unpack_runtime(stream.getvalue(), Path(tmp))
+                    self.assertTrue((Path(tmp) / 'sitemap.xml').is_file())
+                    self.assertTrue((Path(tmp) / 'wifi-setup-henderson.html').is_file())
+
     def test_archive_rejects_links_and_extra_members(self):
         for filename, kind in [('server.js', tarfile.SYMTYPE),
                                ('../escape', tarfile.REGTYPE)]:
