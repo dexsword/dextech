@@ -89,3 +89,209 @@ test('support.html footer includes privacy, terms, and Express cancel route', ()
     dom.window.close();
   }
 });
+
+const ROOT = path.resolve(__dirname, '..');
+const SCRIPT_JS = fs.readFileSync(path.join(ROOT, 'script.js'), 'utf8');
+const INDEX_HTML = fs.readFileSync(path.join(ROOT, 'index.html'), 'utf8');
+
+const PAID_SERVICE_LINKS = {
+  'Custom PC Build': 'https://buy.stripe.com/7sY28j75Be0N0SZ3VuaAw06',
+  'PC Tune-Up': 'https://buy.stripe.com/14A00bahNf4RfNT3VuaAw02',
+  'Virus & Junk Removal': 'https://buy.stripe.com/00w5kv61x2i50SZ8bKaAw03',
+  'Network Optimization': 'https://buy.stripe.com/7sYeV53Tp4qdbxD0JiaAw04',
+  'Pi-hole Setup': 'https://buy.stripe.com/28E28j61xg8V8lr63CaAw05',
+};
+
+const UNPAID_BOOK_SERVICES = [
+  'Home & Office Setup',
+  'Tech Support & Troubleshooting',
+  'Home Automation',
+  'Training & Guidance',
+];
+
+function waitFor(predicate, timeoutMs = 2000) {
+  return new Promise((resolve, reject) => {
+    const started = Date.now();
+    const tick = () => {
+      try {
+        if (predicate()) {
+          resolve();
+          return;
+        }
+      } catch {
+        // Predicate may throw while the DOM is still settling.
+      }
+      if (Date.now() - started > timeoutMs) {
+        reject(new Error('Timed out waiting for booking UI condition'));
+        return;
+      }
+      setTimeout(tick, 10);
+    };
+    tick();
+  });
+}
+
+function loadHomepage(t) {
+  const scrolled = [];
+  const fetchCalls = [];
+  const dom = new JSDOM(INDEX_HTML, {
+    url: 'https://dextech.invalid/',
+    runScripts: 'outside-only',
+    beforeParse(window) {
+      window.IntersectionObserver = class {
+        observe() {}
+        unobserve() {}
+        disconnect() {}
+      };
+      window.HTMLElement.prototype.scrollIntoView = function() {
+        scrolled.push(this.id || this.tagName);
+      };
+      window.fetch = async function(url, options = {}) {
+        const href = String(url);
+        fetchCalls.push({ href, method: options.method || 'GET' });
+        if (/\/api\/availability\/\d{4}-\d{2}-\d{2}$/.test(href)) {
+          return { ok: true, status: 200, json: async () => ({ available: [10, 14] }) };
+        }
+        if (href.includes('/api/availability')) {
+          return { ok: true, status: 200, json: async () => ({}) };
+        }
+        if (href.includes('/api/bookings') && options.method === 'POST') {
+          return { ok: true, status: 200, json: async () => ({ bookingId: 'test-booking-1' }) };
+        }
+        throw new Error('Unexpected fetch: ' + href);
+      };
+    },
+  });
+  t.after(() => dom.window.close());
+  dom.window.eval(SCRIPT_JS);
+  dom.window.initBookingWidget();
+  return { dom, scrolled, fetchCalls };
+}
+
+async function completeBooking(window, service) {
+  const { document } = window;
+  await waitFor(() => document.querySelector('.calendar-day:not(.disabled)'));
+  document.querySelector('.calendar-day:not(.disabled)').click();
+  await waitFor(() => document.querySelector('.time-slot'));
+  document.querySelector('.time-slot').click();
+  document.getElementById('bookingName').value = 'Test User';
+  document.getElementById('bookingEmail').value = 'test@example.com';
+  document.getElementById('bookingPhone').value = '555-123-4567';
+  if (service !== undefined) {
+    const select = document.getElementById('bookingService');
+    select.value = service;
+    select.dispatchEvent(new window.Event('change', { bubbles: true }));
+  }
+  document.querySelector('#bookingForm button[type="submit"]').click();
+  await waitFor(() => document.getElementById('step4').classList.contains('active'));
+}
+
+function paymentState(document) {
+  const paymentAction = document.getElementById('paymentAction');
+  const stripePayBtn = document.getElementById('stripePayBtn');
+  return {
+    visible: paymentAction.style.display !== 'none' && paymentAction.style.display !== '',
+    href: stripePayBtn.getAttribute('href'),
+  };
+}
+
+test('service cards keep known Stripe Payment Links and add Book CTAs for unpaid services', () => {
+  const dom = new JSDOM(INDEX_HTML, { url: 'https://dextech.invalid/' });
+  const { document } = dom.window;
+  try {
+    const paidButtons = document.querySelectorAll('.service-buy-btn[data-stripe]');
+    assert.equal(paidButtons.length, Object.keys(PAID_SERVICE_LINKS).length);
+
+    for (const [service, url] of Object.entries(PAID_SERVICE_LINKS)) {
+      const btn = Array.from(paidButtons).find(el => el.getAttribute('data-service') === service);
+      assert.ok(btn, `Paid card CTA must exist for ${service}`);
+      assert.equal(btn.getAttribute('data-stripe'), url);
+      assert.equal(btn.getAttribute('href'), '#booking');
+      assert.match(btn.textContent, /Book\s*&\s*Pay/i);
+      const option = document.querySelector(`#bookingService option[value="${service}"]`);
+      assert.ok(option, `Booking dropdown must include ${service}`);
+    }
+
+    for (const service of UNPAID_BOOK_SERVICES) {
+      const btn = Array.from(document.querySelectorAll('.service-buy-btn[data-service]')).find(
+        el => el.getAttribute('data-service') === service
+      );
+      assert.ok(btn, `Unpaid card must have a Book CTA for ${service}`);
+      assert.equal(btn.getAttribute('data-stripe'), null);
+      assert.equal(btn.getAttribute('href'), '#booking');
+      assert.equal(btn.textContent.trim(), 'Book');
+      const option = document.querySelector(`#bookingService option[value="${service}"]`);
+      assert.ok(option, `Booking dropdown must include ${service}`);
+    }
+  } finally {
+    dom.window.close();
+  }
+});
+
+test('getStripeUrlForService maps paid services from card data-stripe and clears unpaid ones', () => {
+  const dom = new JSDOM(INDEX_HTML, {
+    url: 'https://dextech.invalid/',
+    runScripts: 'outside-only',
+  });
+  try {
+    dom.window.eval(SCRIPT_JS);
+    const lookup = (service) => dom.window.getStripeUrlForService(service, dom.window.document);
+    for (const [service, url] of Object.entries(PAID_SERVICE_LINKS)) {
+      assert.equal(lookup(service), url);
+    }
+    for (const service of UNPAID_BOOK_SERVICES) {
+      assert.equal(lookup(service), null);
+    }
+    assert.equal(lookup('Consultation'), null);
+    assert.equal(lookup(''), null);
+    assert.equal(lookup(null), null);
+  } finally {
+    dom.window.close();
+  }
+});
+
+test('changing bookingService after Book & Pay updates or clears the success Stripe Pay CTA', async t => {
+  const { dom } = loadHomepage(t);
+  const { document } = dom.window;
+
+  const tuneUp = Array.from(document.querySelectorAll('.service-buy-btn[data-stripe]')).find(
+    el => el.getAttribute('data-service') === 'PC Tune-Up'
+  );
+  tuneUp.click();
+  assert.equal(document.getElementById('bookingService').value, 'PC Tune-Up');
+
+  await completeBooking(dom.window, 'Pi-hole Setup');
+  let pay = paymentState(document);
+  assert.equal(pay.visible, true);
+  assert.equal(pay.href, PAID_SERVICE_LINKS['Pi-hole Setup']);
+
+  document.getElementById('bookAnother').click();
+  tuneUp.click();
+  await completeBooking(dom.window, 'Home Automation');
+  pay = paymentState(document);
+  assert.equal(pay.visible, false);
+});
+
+test('booking a paid service from the form alone shows the matching Stripe Pay CTA', async t => {
+  const { dom } = loadHomepage(t);
+  await completeBooking(dom.window, 'Custom PC Build');
+  const pay = paymentState(dom.window.document);
+  assert.equal(pay.visible, true);
+  assert.equal(pay.href, PAID_SERVICE_LINKS['Custom PC Build']);
+});
+
+test('unpaid Book CTAs scroll to booking and pre-select the service without Stripe', async t => {
+  const { dom, scrolled } = loadHomepage(t);
+  const { document } = dom.window;
+  const homeAutomation = Array.from(document.querySelectorAll('.service-buy-btn[data-service]')).find(
+    el => el.getAttribute('data-service') === 'Home Automation'
+  );
+  homeAutomation.click();
+  assert.equal(document.getElementById('bookingService').value, 'Home Automation');
+  assert.ok(scrolled.includes('booking'));
+  assert.equal(homeAutomation.getAttribute('data-stripe'), null);
+
+  await completeBooking(dom.window);
+  const pay = paymentState(document);
+  assert.equal(pay.visible, false);
+});

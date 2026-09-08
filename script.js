@@ -68,6 +68,18 @@ document.addEventListener('DOMContentLoaded', function() {
   initBookingWidget();
 });
 
+function getStripeUrlForService(service, root) {
+  if (!service) return null;
+  var scope = root || document;
+  var buttons = scope.querySelectorAll('.service-buy-btn[data-service][data-stripe]');
+  for (var i = 0; i < buttons.length; i++) {
+    if (buttons[i].getAttribute('data-service') === service) {
+      return buttons[i].getAttribute('data-stripe') || null;
+    }
+  }
+  return null;
+}
+
 function initBookingWidget() {
   var bookingWidget = document.getElementById('bookingWidget');
   if (!bookingWidget) {
@@ -81,6 +93,7 @@ function initBookingWidget() {
   var selectedTime = null;
   var availability = {};
   var pendingStripeUrl = null;
+  var bookingService = document.getElementById('bookingService');
 
   var step1 = document.getElementById('step1');
   var step2 = document.getElementById('step2');
@@ -103,17 +116,27 @@ function initBookingWidget() {
 
   fetchAvailability();
 
-  // "Book & Pay" service card buttons: scroll to widget, pre-select service, store Stripe URL
-  document.querySelectorAll('.service-buy-btn[data-stripe]').forEach(function(btn) {
+  function syncPendingStripeUrl() {
+    var service = bookingService ? bookingService.value : '';
+    pendingStripeUrl = getStripeUrlForService(service);
+  }
+
+  if (bookingService) {
+    bookingService.addEventListener('change', syncPendingStripeUrl);
+  }
+
+  // Service card Book / Book & Pay: scroll to booking, pre-select service, sync Stripe URL
+  document.querySelectorAll('.service-buy-btn[data-service]').forEach(function(btn) {
     btn.addEventListener('click', function(e) {
       e.preventDefault();
       var service = this.getAttribute('data-service');
-      var stripe = this.getAttribute('data-stripe');
       resetBooking();
-      pendingStripeUrl = stripe;
-      document.getElementById('bookingService').value = service;
-      var widget = document.getElementById('bookingWidget');
-      if (widget) widget.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      if (bookingService && service) {
+        bookingService.value = service;
+      }
+      syncPendingStripeUrl();
+      var bookingSection = document.getElementById('booking');
+      if (bookingSection) bookingSection.scrollIntoView({ behavior: 'smooth', block: 'start' });
     });
   });
 
@@ -364,6 +387,7 @@ function initBookingWidget() {
     details.appendChild(setText('Service', service));
     if (bookingId) details.appendChild(setText('Booking ID', bookingId));
 
+    pendingStripeUrl = getStripeUrlForService(service);
     var paymentAction = document.getElementById('paymentAction');
     var stripePayBtn = document.getElementById('stripePayBtn');
     if (pendingStripeUrl && paymentAction && stripePayBtn) {
