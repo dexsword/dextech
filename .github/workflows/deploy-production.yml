@@ -1,5 +1,6 @@
 name: Deploy production
 
+# Main pushes are validated here before deployment; CI handles PRs and manual runs.
 on:
   push:
     branches: [main]

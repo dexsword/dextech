@@ -5,6 +5,11 @@ auto-merge into `dexsword/dextech:main`. GitHub enforces the required checks,
 up-to-date branch, human reviews, and resolved conversations. The controller never
 uses an immediate merge endpoint, approves a review, bypasses a rule, or fabricates CI.
 
+The standalone `CI` workflow runs on pull requests and manual dispatch. After a
+merge, `Deploy production` validates the exact commit pushed to `main` with the
+full test/health-check script and production dependency audit before deployment.
+There is no separate main-push CI run duplicating those checks.
+
 ## Required checks and migration
 
 The target configuration has **two required contexts**, both sourced from
