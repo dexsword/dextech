@@ -178,11 +178,24 @@ async function snapshot(env, api, sleep = wait) {
       !(typeof event.changes?.base?.ref?.from === 'string' && event.changes.base.ref.from.length > 0)) {
     return output(env, { active: false });
   }
+  const draftEvent = event.action !== 'closed' &&
+    (event.pull_request?.draft === true || event.action === 'converted_to_draft');
   if (!policy.sameCandidate({ ...event.pull_request, state: 'open' },
-      { number: event.pull_request?.number, head: event.pull_request?.head?.sha, base: env.GITHUB_SHA })) fail();
+      { number: event.pull_request?.number, head: event.pull_request?.head?.sha,
+        base: draftEvent ? event.pull_request?.base?.sha : env.GITHUB_SHA })) fail();
   const number = event.pull_request?.number;
   if (!Number.isSafeInteger(number) || number < 1) fail();
   const pr = await api(`/repos/${REPOSITORY}/pulls/${number}`);
+  if (draftEvent || (event.action !== 'closed' && pr.draft === true)) {
+    // Cleanup needs repository/PR/head identity, not an up-to-date merge
+    // candidate. A draft may be behind main or have conflicts. Never let a
+    // delayed draft event become a review just because the PR is now ready.
+    // This path can only revoke authorization; ready-PR validation stays below.
+    if (!policy.sameCandidate(pr, { number, head: event.pull_request.head.sha, base: pr.base?.sha })) fail('stale');
+    await activeRun(env, api, number);
+    await revoke(pr, api);
+    return output(env, { active: false, draft: true });
+  }
   const main = await api(`/repos/${REPOSITORY}/git/ref/heads/main`);
   const match = { number, head: event.pull_request?.head?.sha, base: main.object?.sha };
   if (!sha(match.head) || !sha(match.base) ||
@@ -324,11 +337,12 @@ async function publish(env, api) {
   // lets native auto-merge wait for GitHub branch protection.
   const ids = await pendingChecks(env, api, match);
   const pr = await currentCandidate(api, match);
+  if (env.PR_DRAFT !== 'false' || pr.draft !== false) fail('inactive');
   const reviewOK = env.DISARM_RESULT === 'success' && policy.reviewPass(env.REVIEW_JSON, env.REVIEW_RESULT);
   const classificationOK = env.ELIGIBILITY_RESULT === 'success' && ['true', 'false'].includes(env.ELIGIBLE);
   const eligible = classificationOK && env.ELIGIBLE === 'true';
   const manual = env.AUTO_MERGE_RESULT === 'success' && env.REQUEST_RESULT === 'skipped' &&
-    classificationOK && (!eligible || (env.PR_DRAFT === 'true' && pr.draft === true)) && pr.auto_merge === null;
+    classificationOK && !eligible && pr.auto_merge === null;
   const confirmed = env.AUTO_MERGE_RESULT === 'success' &&
     env.CONFIRMED_HEAD === match.head && env.CONFIRMED_BASE === match.base &&
     env.CONFIRMED_MERGE === match.merge &&
@@ -342,7 +356,7 @@ async function publish(env, api) {
     if (passed && !manual) await requirements(env, api, match, { allowCompleted: true });
     const live = await currentCandidate(api, match);
     if (passed && !manual && (live.draft !== false || !appRequestMatches(live, env.CONFIRMED_APP))) fail('unavailable');
-    if (passed && manual && eligible && live.draft !== true) fail('inactive');
+    if (passed && live.draft !== false) fail('inactive');
     await activeRun(env, api);
     const owned = await api(`/repos/${REPOSITORY}/check-runs/${ids[kind]}`);
     if (owned.external_id !== checkBinding(env, match) || owned.head_sha !== match.head ||
@@ -478,7 +492,7 @@ async function currentCandidate(api, match, ready = false, discovering = false) 
   return pr;
 }
 
-async function requirements(env, api, match, { allowCompleted = false, allowDraft = false } = {}) {
+async function requirements(env, api, match, { allowCompleted = false } = {}) {
   const config = await gateConfiguration(api);
   if (env.LEGACY_CHECKS !== String(config.legacy)) fail('stale');
   const nativeId = await nativeGate(env, api, match, allowCompleted);
@@ -502,7 +516,7 @@ async function requirements(env, api, match, { allowCompleted = false, allowDraf
   if (repository?.autoMergeAllowed !== true || repository.squashMergeAllowed !== true) fail('permission');
   if (pr?.headRefOid !== match.head || pr.baseRefOid !== match.base ||
       pr.potentialMergeCommit?.oid !== match.merge) fail('stale');
-  if (pr.state !== 'OPEN' || (pr.isDraft !== false && !(allowDraft && pr.isDraft === true))) fail('inactive');
+  if (pr.state !== 'OPEN' || pr.isDraft !== false) fail('inactive');
   if (pr.mergeable !== 'MERGEABLE') fail('merge');
   // Native auto-merge owns the wait for enforced human reviews/conversations.
   // Requiring them here would strand a passing review when approval arrives
@@ -538,13 +552,14 @@ function gatePrerequisites(env) {
       env.DISARM_RESULT !== 'success' || env.ELIGIBILITY_RESULT !== 'success' ||
       !['true', 'false'].includes(env.ELIGIBLE) || !['true', 'false'].includes(env.PR_DRAFT) ||
       !policy.reviewPass(env.REVIEW_JSON, env.REVIEW_RESULT)) fail('invalid');
+  if (env.PR_DRAFT !== 'false') fail('inactive');
 }
 
 async function prepareNativeGate(env, api) {
   gatePrerequisites(env);
   const match = expected(env);
-  await requirements(env, api, match, { allowDraft: true });
-  const pr = await currentCandidate(api, match);
+  await requirements(env, api, match);
+  const pr = await currentCandidate(api, match, true);
   if (String(pr.draft) !== env.PR_DRAFT) fail('stale');
   const request = env.ELIGIBLE === 'true' && pr.draft === false;
   if (!request && pr.auto_merge !== null) fail('unavailable');

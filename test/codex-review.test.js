@@ -733,11 +733,11 @@ test('wrong method or head in GitHub mutation result fails confirmation', async 
   }
 });
 
-test('eligible drafts retain manual review behavior without requesting auto-merge', async t => {
+test('drafts cannot publish passing legacy gates even with a clean review', async t => {
   const current = pr(); current.draft = true;
   const mock = orderAPI({ current });
-  await c.publish({ ...publicationEnv(t), AUTO_MERGE_RESULT: 'success', REQUEST_RESULT: 'skipped', PR_DRAFT: 'true' }, mock.api);
-  assert.ok(Object.values(mock.checks).every(x => x.conclusion === 'success'));
+  await assert.rejects(c.publish({ ...publicationEnv(t), AUTO_MERGE_RESULT: 'success', REQUEST_RESULT: 'skipped', PR_DRAFT: 'true' }, mock.api));
+  assert.ok(Object.values(mock.checks).every(x => x.status === 'in_progress' && x.conclusion === null));
   assert.equal(mock.calls.some(x => x.body?.query?.startsWith('mutation')), false);
 });
 
@@ -1464,18 +1464,15 @@ test('native-only gate confirms eligible auto-merge without creating, updating o
   assert.equal(mock.calls.some(c => c.body?.conclusion), false, 'Only GitHub completes the native gate');
 });
 
-test('native gate passes clean protected changes and drafts without requesting auto-merge', async () => {
-  for (const overrides of [{ ELIGIBLE: 'false' }, { PR_DRAFT: 'true' }]) {
-    const current = pr(); current.draft = overrides.PR_DRAFT === 'true';
-    const mock = nativeAPI({ current });
-    const values = { ...nativeEnv(), ...overrides, REQUEST_RESULT: 'skipped' };
-    assert.deepEqual(await c.prepareNativeGate(values, mock.api), { request: false });
-    assert.deepEqual(await c.finishNativeGate(values, mock.api), { passed: true });
-    assert.equal(mock.calls.some(c => c.body?.query?.startsWith('mutation')), false);
-    await assert.rejects(c.finishNativeGate({ ...values, REQUEST_RESULT: 'success' }, mock.api));
-    const armed = nativeAPI({ current: { ...current, auto_merge: { merge_method: 'squash' } } });
-    await assert.rejects(c.prepareNativeGate(values, armed.api));
-  }
+test('native gate passes clean protected changes without requesting auto-merge', async () => {
+  const mock = nativeAPI();
+  const values = { ...nativeEnv(), ELIGIBLE: 'false', REQUEST_RESULT: 'skipped' };
+  assert.deepEqual(await c.prepareNativeGate(values, mock.api), { request: false });
+  assert.deepEqual(await c.finishNativeGate(values, mock.api), { passed: true });
+  assert.equal(mock.calls.some(c => c.body?.query?.startsWith('mutation')), false);
+  await assert.rejects(c.finishNativeGate({ ...values, REQUEST_RESULT: 'success' }, mock.api));
+  const armed = nativeAPI({ current: { ...pr(), auto_merge: { merge_method: 'squash' } } });
+  await assert.rejects(c.prepareNativeGate(values, armed.api));
 });
 
 test('native finalization rejects missing confirmation, failed CI, changed candidates and cancelled runs', async t => {
@@ -1641,4 +1638,157 @@ test('compatibility publication accepts the completed native gate only after suc
   await c.publish({ ...publicationEnv(t, receipt), REQUEST_RESULT: 'success' }, api);
   assert.ok(Object.values(mock.checks).every(c => c.conclusion === 'success'));
   await assert.rejects(c.prepareNativeGate(env(), api));
+});
+
+function draftSnapshotFixture(t, { action = 'opened', current = { ...pr(), draft: true }, eventPR = current,
+  workflowSha = base, rejectRevocation = false, keepRequest = false, obsolete = false } = {}) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'dextech-draft-review-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const values = { ...env(), GITHUB_EVENT_PATH: path.join(dir, 'event.json'), GITHUB_OUTPUT: path.join(dir, 'output'),
+    GITHUB_SHA: workflowSha, GITHUB_REPOSITORY: p.REPOSITORY, GITHUB_EVENT_NAME: 'pull_request_target' };
+  const event = { action, pull_request: structuredClone(eventPR) };
+  if (action === 'edited') event.changes = { base: { ref: { from: 'develop' } } };
+  fs.writeFileSync(values.GITHUB_EVENT_PATH, JSON.stringify(event));
+  current = structuredClone(current);
+  const calls = [];
+  const api = async (url, method = 'GET', body) => {
+    calls.push({ url, method, body });
+    if (url.endsWith('/pulls/12')) return structuredClone(current);
+    if (url === '/graphql') {
+      assert.match(body.query, /disablePullRequestAutoMerge/);
+      if (rejectRevocation) throw new Error('Synthetic rejected revocation');
+      if (!keepRequest) current.auto_merge = null;
+      return { data: { disablePullRequestAutoMerge: { pullRequest: { id: current.node_id } } } };
+    }
+    if (url.includes('/actions/')) {
+      const result = mergeResponse(url);
+      if (obsolete && url.includes('/actions/workflows/')) {
+        result.workflow_runs.push({ id: 124, display_title: 'Codex review PR #12' });
+      }
+      return result;
+    }
+    assert.fail(`Draft cleanup must not access merge discovery, CI, checks or classification: ${url}`);
+  };
+  return { values, calls, api, current, output: () => fs.existsSync(values.GITHUB_OUTPUT) ? fs.readFileSync(values.GITHUB_OUTPUT, 'utf8') : '' };
+}
+
+test('draft open, update, reopen, retarget and conversion only disarm and defer review', async t => {
+  for (const action of ['opened', 'synchronize', 'reopened', 'edited', 'converted_to_draft']) {
+    for (const armed of [false, true]) {
+      const current = { ...pr(), draft: true, auto_merge: armed ?
+        { merge_method: 'squash', enabled_by: { login: 'dextech-merge[bot]' } } : null };
+      const fixture = draftSnapshotFixture(t, { action, current });
+      await c.snapshot(fixture.values, fixture.api, () => assert.fail('Draft must not wait for merge discovery'));
+      assert.equal(fixture.output(), 'active=false\ndraft=true\n');
+      assert.equal(fixture.current.auto_merge, null);
+      assert.equal(fixture.calls.filter(c => c.method !== 'GET').length, armed ? 1 : 0);
+      assert.equal(fixture.calls.some(c => /check-runs|git\//.test(c.url)), false);
+      if (armed) assert.ok(fixture.calls.at(-1).url.endsWith('/pulls/12'), 'Revocation has an independent read-back');
+    }
+  }
+});
+
+test('draft revocation works when main advanced and no merge candidate is available', async t => {
+  const current = { ...pr(), draft: true, mergeable: false, merge_commit_sha: null,
+    auto_merge: { merge_method: 'squash' } };
+  const fixture = draftSnapshotFixture(t, { current, action: 'converted_to_draft', workflowSha: 'c'.repeat(40) });
+  await c.snapshot(fixture.values, fixture.api);
+  assert.equal(fixture.current.auto_merge, null);
+  assert.equal(fixture.output(), 'active=false\ndraft=true\n');
+});
+
+test('failed or unconfirmed draft revocation and superseded runs cannot report successful cleanup', async t => {
+  for (const variant of [{ rejectRevocation: true }, { keepRequest: true }, { obsolete: true }]) {
+    const fixture = draftSnapshotFixture(t, { ...variant, action: 'converted_to_draft',
+      current: { ...pr(), draft: true, auto_merge: { merge_method: 'squash' } } });
+    await assert.rejects(c.snapshot(fixture.values, fixture.api));
+    assert.equal(fixture.output(), '');
+    assert.equal(fixture.calls.some(c => c.body?.conclusion), false);
+    if (variant.obsolete) assert.equal(fixture.calls.some(c => c.method !== 'GET'), false);
+  }
+});
+
+test('draft cleanup rejects forks, changed heads and wrong repositories before revocation', async t => {
+  for (const change of [
+    value => { value.head.repo.full_name = 'fork/dextech'; },
+    value => { value.base.repo.full_name = 'other/dextech'; },
+    value => { value.base.ref = 'develop'; },
+    value => { value.head.sha = 'c'.repeat(40); },
+    value => { value.number = 13; },
+    value => { value.state = 'closed'; }
+  ]) {
+    const eventPR = { ...pr(), draft: true };
+    const current = structuredClone(eventPR);
+    current.auto_merge = { merge_method: 'squash' };
+    change(current);
+    const fixture = draftSnapshotFixture(t, { eventPR, current });
+    await assert.rejects(c.snapshot(fixture.values, fixture.api));
+    assert.equal(fixture.calls.some(c => c.method !== 'GET'), false);
+  }
+});
+
+test('a delayed draft event stays deferred, and a ready event encountering a live draft cannot review', async t => {
+  for (const [eventDraft, liveDraft, action] of [[true, false, 'opened'], [false, true, 'ready_for_review']]) {
+    const fixture = draftSnapshotFixture(t, { action,
+      eventPR: { ...pr(), draft: eventDraft }, current: { ...pr(), draft: liveDraft } });
+    await c.snapshot(fixture.values, fixture.api);
+    assert.equal(fixture.output(), 'active=false\ndraft=true\n');
+  }
+});
+
+test('ready-for-review on the same draft SHA starts a fresh bound evaluation with pending legacy checks', async t => {
+  const fixture = draftSnapshotFixture(t);
+  await c.snapshot(fixture.values, fixture.api);
+  fs.writeFileSync(fixture.values.GITHUB_EVENT_PATH, JSON.stringify({ action: 'ready_for_review', pull_request: pr() }));
+  fs.writeFileSync(fixture.values.GITHUB_OUTPUT, '');
+  const writes = [];
+  await c.snapshot(fixture.values, async (url, method = 'GET', body) => {
+    if (method === 'POST') {
+      assert.ok(url.endsWith('/check-runs'));
+      writes.push(body);
+      return { ...body, id: 100 + writes.length, conclusion: null };
+    }
+    return mergeResponse(url) || pr();
+  });
+  assert.match(fixture.output(), /active=true\ndraft=false\nlegacy=true/);
+  assert.match(fixture.output(), new RegExp(`head=${head}`));
+  assert.match(fixture.output(), new RegExp(`merge=${merge}`));
+  assert.deepEqual(writes.map(c => c.name), Object.values(p.CHECKS));
+  assert.ok(writes.every(c => c.status === 'in_progress' && !c.conclusion && c.head_sha === head));
+});
+
+test('neither native nor legacy gates accept draft state or skipped review as a passing result', async t => {
+  for (const overrides of [{ PR_DRAFT: 'true' }, { SNAPSHOT_ACTIVE: 'false' }, { REVIEW_RESULT: 'skipped' }]) {
+    await assert.rejects(c.prepareNativeGate({ ...nativeEnv(), ...overrides }, () => assert.fail('Rejected before API/token access')));
+  }
+  const current = { ...pr(), draft: true };
+  const mock = nativeAPI({ current });
+  await assert.rejects(c.prepareNativeGate(nativeEnv(), mock.api));
+  await assert.rejects(c.finishNativeGate({ ...nativeEnv(), REQUEST_RESULT: 'skipped' }, mock.api));
+  const legacy = orderAPI({ current });
+  await assert.rejects(c.publish({ ...publicationEnv(t), ELIGIBLE: 'false' }, legacy.api));
+  assert.equal(legacy.calls.some(c => c.body?.conclusion === 'success'), false);
+});
+
+test('workflow skips draft key-bearing work without emitting a skipped required merge-gate', () => {
+  const { runInNewContext } = require('node:vm');
+  const workflow = fs.readFileSync(path.join(__dirname, '../.github/workflows/codex-review.yml'), 'utf8');
+  const final = workflow.split('\n  auto-merge:\n')[1];
+  const condition = final.split('    if: >-\n')[1].split('    needs:')[0].trim();
+  const name = final.match(/^    name: \$\{\{ (.+) \}\}$/m)[1];
+  for (const action of ['opened', 'synchronize', 'reopened', 'converted_to_draft', 'ready_for_review', 'edited']) {
+    const changes = action === 'edited' ? { base: { ref: { from: 'develop' } } } : {};
+    const github = { event: { action, changes, pull_request: { draft: true } } };
+    assert.equal(runInNewContext(condition, { github, always: () => true }), false);
+    assert.equal(runInNewContext(name, { github }), 'Draft PR');
+  }
+  const github = { event: { action: 'ready_for_review', changes: {}, pull_request: { draft: false } } };
+  assert.equal(runInNewContext(condition, { github, always: () => true }), true);
+  assert.equal(runInNewContext(name, { github }), 'merge-gate');
+  for (const job of ['review', 'eligibility', 'disarm', 'publish', 'feedback']) {
+    const block = workflow.split(`\n  ${job}:\n`)[1].split(/\n  [a-z-]+:\n/)[0];
+    assert.match(block, /needs\.snapshot\.outputs\.active == 'true'/);
+  }
+  assert.match(workflow, /types: \[opened, synchronize, reopened, ready_for_review, converted_to_draft, closed, edited\]/);
+  assert.match(workflow, /cancel-in-progress: true/);
 });

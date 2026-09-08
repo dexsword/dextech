@@ -112,6 +112,7 @@ jobs:
           path: candidate
       - name: Prepare bounded text-only review from immutable Git objects
         run: node control/.github/codex/control.cjs prepare
+      # Drafts leave snapshot inactive; only ready PRs reach this key-bearing job.
       # Must remain the final substantive step. No PR scripts, package installs,
       # artifacts, credentials, or GitHub writes after privilege dropping.
       - name: Read-only Codex review
@@ -225,10 +226,10 @@ jobs:
 
   auto-merge:
     # A failed/skipped prerequisite must produce a failed required gate.
-    # Ignored events use another name so a skipped job cannot satisfy this gate.
-    name: ${{ (github.event.action == 'closed' || (github.event.action == 'edited' && !github.event.changes.base.ref.from)) && 'Inactive PR event' || 'merge-gate' }}
+    # Draft/ignored events use another name: a skipped job must not pass the gate.
+    name: ${{ (github.event.pull_request.draft || github.event.action == 'converted_to_draft') && 'Draft PR' || (github.event.action == 'closed' || (github.event.action == 'edited' && !github.event.changes.base.ref.from)) && 'Inactive PR event' || 'merge-gate' }}
     if: >-
-      always() && github.event.action != 'closed' &&
+      always() && !github.event.pull_request.draft && github.event.action != 'converted_to_draft' && github.event.action != 'closed' &&
       (github.event.action != 'edited' || github.event.changes.base.ref.from)
     needs: [snapshot, disarm, eligibility, review]
     runs-on: ubuntu-24.04

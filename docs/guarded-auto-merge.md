@@ -46,10 +46,12 @@ is not proof that GitHub accepted a required result.
 
 ## Execution and trust boundaries
 
-1. `snapshot` validates the live same-repository PR and current main, verifies
-   ownership of the run, and revokes any previous native auto-merge request.
-   It records the source, base and synthetic merge commit. In migration mode it
-   also creates pending legacy checks. It never writes the native gate.
+1. `snapshot` validates the live same-repository PR, verifies ownership of the
+   run, and revokes any previous native auto-merge request. Draft events stop
+   here with `active=false`; they need no merge candidate or up-to-date base.
+   Ready PRs additionally validate current main and record source, base and
+   synthetic merge commits. In migration mode they also create pending legacy
+   checks. Snapshot never writes the native gate.
 2. `disarm` independently verifies revocation. `eligibility` classifies exact Git
    objects against the trusted allowlist, and `review` supplies complete before/
    after text to Codex as untrusted data. Neither executes candidate scripts.
@@ -61,7 +63,7 @@ is not proof that GitHub accepted a required result.
    proceeds to token creation and `enablePullRequestAutoMerge` with SQUASH and
    `expectedHeadOid`. The native gate is **already running** during this request.
 5. `gate-finish`, using only the read token, revalidates the candidate and the
-   independently confirmed App request. For a protected change or draft, it
+   independently confirmed App request. For a protected change, it
    instead requires the request step to be skipped and auto-merge to be absent.
    Its exit status determines the gate result; GitHub completes the native check
    after all job steps and token cleanup finish.
@@ -69,6 +71,20 @@ is not proof that GitHub accepted a required result.
    gate succeeds. Ineligible changes have a neutral legacy eligibility result.
    The optional `feedback` job manages one metadata-only review comment and
    tolerates a PR merging before it runs.
+
+Draft opening, pushes and reopening still run ordinary CI. The Codex workflow
+only performs draft cleanup: it does not classify files, run the AI reviewer,
+mint an App token, or publish passing gates. Converting a ready PR to draft uses
+the same per-PR concurrency group to cancel obsolete work, and snapshot revokes
+the previous auto-merge request even if the draft is behind main or conflicted.
+Failed revocation remains a failed cleanup run.
+
+The skipped final job is named `Draft PR`, never `merge-gate`. Existing results
+are not rewritten as successful or neutral to accommodate drafts. A
+`ready_for_review` event starts a fresh full evaluation, even on the same source
+SHA. A delayed draft event cannot start AI review if the PR has since become
+ready, and a ready-event run that discovers a live draft cannot pass either
+native or legacy gates. CI triggers and required-check configuration are unchanged.
 
 The reviewer receives only `contents: read` and `OPENAI_API_KEY`. The pinned
 `openai/codex-action` is its last substantive step, with read-only sandboxing and
