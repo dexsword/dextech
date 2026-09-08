@@ -7,8 +7,9 @@ live enforcement is demonstrated.
 
 ## Test conditions
 
-Use a ready, same-repository PR containing a protected documentation or workflow
-change. Keep auto-merge absent throughout the experiment and do not attempt a
+Use a ready, same-repository PR containing a protected script or workflow
+change. Verify its exact changed paths with the current policy before opening
+the PR: ordinary documentation is eligible for auto-merge and is unsuitable. Keep auto-merge absent throughout the experiment and do not attempt a
 merge. Keep `checks`, `Codex Review / gate`, and `Auto Merge / eligible` required,
 with their existing GitHub Actions source, strict updates, and review settings.
 Stage `merge-gate` from GitHub Actions alongside these requirements.
@@ -18,6 +19,17 @@ check ID. Match the current job through the run-attempt jobs endpoint, then matc
 that exact check ID in GraphQL with `isRequired(pullRequestNumber: ...) = true`.
 Check the source and synthetic merge commit separately; an old same-name success
 must not stand in for the current native job.
+
+Capture metadata with the read-only operator command:
+
+```sh
+node scripts/collect-native-gate-evidence.cjs PR_NUMBER RUN_ID output.json
+```
+
+Use a new output file for every observation. The command reports observations,
+not a pass verdict; account for other merge blockers and any truncated review
+thread connection before interpreting the result. Captures are multiple API
+reads, not an atomic snapshot, so repeat a capture when the run changes state.
 
 ## Evidence required
 
@@ -48,6 +60,11 @@ The live experiment is pending. On 2026-09-08, the successful native check
 `a91b34a941ba07ce177dcc1dcaf965b562ea44b2`. GitHub reported `isRequired: false`.
 That establishes native check identity, not native enforcement. The existing
 ruleset required only CI and the two legacy checks at that observation.
+
+The first documentation-only candidate, [PR #34](https://github.com/dexsword/dextech/pull/34),
+auto-merged under the existing allowlist. Its native check was still optional;
+that merge provides no evidence of native enforcement. Use a protected script
+or workflow candidate for the remaining experiment.
 
 Replace this pending status with the recorded scenarios and run links after the
 staged requirement is installed and tested. The subsequent migration removes the
