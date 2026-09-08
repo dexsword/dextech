@@ -524,6 +524,7 @@ async function requestAutoMerge(env, api, appApi) {
 
 async function main(env) {
   switch (process.argv[2]) {
+    case 'verify-rules': return gateConfiguration(client(env));
     case 'snapshot': return snapshot(env, client(env));
     case 'classify': return output(env, classifyCandidate(path.resolve('candidate'), expected(env)));
     case 'prepare': return prepare(path.resolve('candidate'), expected(env), env);

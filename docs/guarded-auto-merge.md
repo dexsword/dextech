@@ -195,6 +195,14 @@ validator. This is a dated observation, not an authorization artifact; every
 ready run still reads and validates the live API response. Recheck the endpoint
 before merging if repository settings change.
 
+PR #36's required `checks` job additionally runs `control.cjs verify-rules`
+against the live API using the candidate's native-only validator and the built-in
+read-only token, before dependency installation. The cleanup therefore cannot
+pass its required CI with legacy requirements still configured. This one-time
+installation check is scoped to same-repository PR #36; later reviews validate
+live rules in their trusted controller. No operator credentials or merge App
+token are involved. Settings can change after a check; rerun required CI if they do.
+
 The staged native-gate enforcement evidence is recorded in
 [PR #35](https://github.com/dexsword/dextech/pull/35). Retire the legacy requirements
 only after the native gate is recognized and its failure enforcement is verified.

@@ -1490,3 +1490,27 @@ test('duplicate or wrong-source native requirements reject before authorization'
     await assert.rejects(c.gateConfiguration(async () => wrong));
   }
 });
+
+
+test('cleanup installation checks live native-only rules in required CI with read-only credentials', () => {
+  const { runInNewContext } = require('node:vm');
+  const ci = fs.readFileSync(path.join(__dirname, '../.github/workflows/ci.yml'), 'utf8');
+  const step = ci.split('      - name: Verify live native-only rules before installing cleanup\n')[1].split('      - name:')[0];
+  const condition = step.match(/        if: (.*)/)[1];
+  for (const [repository, number, source, event, expected] of [
+    [p.REPOSITORY, 36, p.REPOSITORY, 'pull_request', true],
+    [p.REPOSITORY, 36, p.REPOSITORY, 'workflow_dispatch', false],
+    [p.REPOSITORY, 36, 'fork/dextech', 'pull_request', false],
+    ['fork/dextech', 36, 'fork/dextech', 'pull_request', false],
+    [p.REPOSITORY, 37, p.REPOSITORY, 'pull_request', false]
+  ]) {
+    const github = { repository, event_name: event,
+      event: { pull_request: { number, head: { repo: { full_name: source } } } } };
+    assert.equal(runInNewContext(condition, { github }), expected);
+  }
+  assert.match(ci, /permissions:\n  contents: read/);
+  assert.doesNotMatch(ci, /(?:contents|pull-requests|checks|actions): write/);
+  assert.match(step, /GH_TOKEN: \$\{\{ github.token \}\}/);
+  assert.match(step, /run: node \.github\/codex\/control\.cjs verify-rules/);
+  assert.ok(ci.indexOf('control.cjs verify-rules') < ci.indexOf('run: bash scripts/deployment-checks.sh'));
+});
