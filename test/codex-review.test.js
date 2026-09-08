@@ -896,7 +896,7 @@ test('control review includes policy/schema dependencies as data and retains com
   assert.doesNotMatch(prompt, /UNRELATED_APPLICATION_TEXT/);
 });
 
-test('base retargets run both workflows; irrelevant edits cannot cancel or supersede them', async () => {
+test('every PR edit runs real required jobs and supersedes the previous evaluation', async () => {
   const vm = require('node:vm');
   const codex = fs.readFileSync(path.join(__dirname, '../.github/workflows/codex-review.yml'), 'utf8');
   const ci = fs.readFileSync(path.join(__dirname, '../.github/workflows/ci.yml'), 'utf8');
@@ -906,57 +906,56 @@ test('base retargets run both workflows; irrelevant edits cannot cancel or super
   });
   const expand = (text, event) => text.replace(/\$\{\{ (.*?) \}\}/g, (_, expression) => evaluate(expression, event));
   const guard = codex.match(/  snapshot:\n    if: >-\n([\s\S]*?)    runs-on:/)[1].trim();
-  const ciGuard = ci.match(/    if: (.*)/)[1];
+  assert.doesNotMatch(ci.split('  checks:')[1].split('    steps:')[0], /    if:/);
   const ciName = ci.match(/    name: (.*)/)[1];
   const group = workflow => workflow.match(/  group: (.*)/)[1];
   const title = codex.match(/run-name: "(.*)"/)[1];
+  const final = codex.split('\n  auto-merge:\n')[1];
+  const finalGuard = final.split('    if: >-\n')[1].split('    needs:')[0].trim();
+  const finalName = final.match(/^    name: (.*)$/m)[1];
   assert.match(ci, /types: \[opened, synchronize, reopened, edited\]/);
   for (const changes of [{ base: { ref: { from: 'develop' } } }, {}, { title: { from: 'old' } }, { body: { from: 'old' } }]) {
     // Actions expressions resolve absent nested fields to null. Represent that
     // explicitly here; all evaluated expressions come from the trusted workflows.
     const event = { action: 'edited', pull_request: pr(), changes: { ...changes, base: changes.base || { ref: { from: null } } } };
-    const relevant = !!changes.base;
-    assert.equal(!!evaluate(guard, event), relevant);
-    assert.equal(!!evaluate(ciGuard, event), relevant);
-    assert.equal(expand(ciName, event), relevant ? 'checks' : 'Ignored PR edit');
-    assert.equal(expand(group(codex), event), relevant ? 'codex-review-pr-12' : 'codex-review-pr-ignored-124');
-    assert.equal(expand(group(ci), event), relevant ? 'CI-12' : 'CI-ignored-124');
+    assert.equal(!!evaluate(guard, event), true);
+    assert.equal(expand(ciName, event), 'checks');
+    assert.equal(vm.runInNewContext(finalGuard, { github: { event }, always: () => true }), true);
+    assert.equal(expand(finalName, event), 'merge-gate');
+    assert.equal(expand(group(codex), event), 'codex-review-pr-12');
+    assert.equal(expand(group(ci), event), 'CI-12');
     const display_title = expand(title, event);
-    assert.equal(display_title, relevant ? 'Codex review PR #12' : 'Ignored PR edit #12');
+    assert.equal(display_title, 'Codex review PR #12');
     const mock = orderAPI();
     const api = async (url, method, body) => {
       const result = await mock.api(url, method, body);
       if (url.includes('/actions/workflows/')) result.workflow_runs.push({ id: 124, display_title });
       return result;
     };
-    if (relevant) await assert.rejects(c.requestAutoMerge(env(), api));
-    else await c.requestAutoMerge(env(), api);
+    await assert.rejects(c.requestAutoMerge(env(), api));
   }
 });
 
-test('snapshot ignores title/body edits before API access but retargets create pending checks', async t => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'dextech-retarget-'));
+test('title, body and base edits bind a fresh ready candidate without custom check writes', async t => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'dextech-edit-'));
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
   const values = { ...env(), GITHUB_EVENT_PATH: path.join(dir, 'event'), GITHUB_OUTPUT: path.join(dir, 'output'),
     GITHUB_SHA: base, GITHUB_REPOSITORY: p.REPOSITORY, GITHUB_EVENT_NAME: 'pull_request_target' };
-  for (const changes of [undefined, {}, { title: { from: 'old' } }, { body: { from: 'old' } }]) {
+  for (const changes of [undefined, {}, { title: { from: 'old' } }, { body: { from: 'old' } },
+    { base: { ref: { from: 'develop' } } }]) {
     fs.writeFileSync(values.GITHUB_EVENT_PATH, JSON.stringify({ action: 'edited', changes, pull_request: pr() }));
-    await c.snapshot(values, async () => assert.fail('irrelevant edit accessed API'));
+    fs.writeFileSync(values.GITHUB_OUTPUT, '');
+    await c.snapshot(values, async (url, method = 'GET') => {
+      assert.equal(method, 'GET');
+      assert.doesNotMatch(url, /check-runs/);
+      return mergeResponse(url) || pr();
+    }, async () => assert.fail('unexpected metadata retry'));
+    const output = fs.readFileSync(values.GITHUB_OUTPUT, 'utf8');
+    assert.match(output, /active=true\ndraft=false/);
+    assert.match(output, new RegExp(`head=${head}`));
+    assert.match(output, new RegExp(`merge=${merge}`));
   }
-  fs.writeFileSync(values.GITHUB_EVENT_PATH, JSON.stringify({ action: 'edited',
-    changes: { base: { ref: { from: 'develop' } } }, pull_request: pr() }));
-  const writes = [];
-  await c.snapshot(values, async (url, method, body) => {
-    if (method === 'POST') {
-      writes.push(body);
-      return { ...body, id: 100 + writes.length, conclusion: null };
-    }
-    return mergeResponse(url) || pr();
-  }, async () => assert.fail('unexpected metadata retry'));
-  assert.equal(writes.length, 0);
-  assert.ok(writes.every(check => check.head_sha === head && check.status === 'in_progress'));
 });
-
 
 test('App transport is restricted to final candidate reads, native request, and confirmation', async () => {
   const mock = orderAPI(), readCalls = [], appCalls = [];

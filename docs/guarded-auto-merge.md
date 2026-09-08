@@ -126,10 +126,12 @@ supersede the final jobs of the review that authorized the merge. Closed events
 from older workflow revisions return inactive before candidate validation or API
 access; they cannot rewrite checks or fail because main advanced at merge.
 Reopening runs a fresh snapshot and revokes stale auto-merge requests before
-review. Title/body-only edits use separate ignored concurrency groups and a
-different gate job name (`Inactive PR event`), so they
-cannot cancel a review or satisfy `merge-gate` through a skipped job. Base-retarget
-edits start both CI and review. There are no check/status triggers or production
+review. All ready PR edits, including title/body changes and base retargets, start
+both CI and review in the normal per-PR concurrency groups. Each subscribed event
+must produce the real required check names; alternate-name skipped jobs can leave
+GitHub reporting a blocked PR despite older passing results. Edits therefore cost
+a fresh evaluation, while draft edits still defer AI review. This avoids relying
+on the mergeability of an older check suite. Closed events remain excluded. There are no check/status triggers or production
 workflow-dispatch overrides in the review workflow.
 
 API reads and writes are not atomic. Repeated identity checks supplement the

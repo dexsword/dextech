@@ -170,11 +170,6 @@ async function snapshot(env, api, sleep = wait) {
   // Older workflow revisions may still deliver closed events. They have no
   // merge candidate to validate and must not mutate checks or authorization.
   if (event.action === 'closed') return output(env, { active: false });
-  // Only a base retarget is a relevant edit; title/body edits cannot disarm a run.
-  if (event.action === 'edited' &&
-      !(typeof event.changes?.base?.ref?.from === 'string' && event.changes.base.ref.from.length > 0)) {
-    return output(env, { active: false });
-  }
   const draftEvent = event.action !== 'closed' &&
     (event.pull_request?.draft === true || event.action === 'converted_to_draft');
   if (!policy.sameCandidate({ ...event.pull_request, state: 'open' },
