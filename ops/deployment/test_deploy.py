@@ -24,6 +24,27 @@ OLD = 'b' * 40
 
 
 class Controls(unittest.TestCase):
+    def test_runtime_includes_og_preview_image(self):
+        self.assertIn('images/preview.jpg', d.RUNTIME)
+
+    def test_unpack_runtime_writes_nested_preview_path(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            stream = io.BytesIO()
+            with tarfile.open(fileobj=stream, mode='w') as tar:
+                for name in sorted(d.RUNTIME):
+                    payload = b'preview' if name == 'images/preview.jpg' else b'x'
+                    member = tarfile.TarInfo(name)
+                    member.size = len(payload)
+                    tar.addfile(member, io.BytesIO(payload))
+            dest = Path(tmp)
+            d.unpack_runtime(stream.getvalue(), dest)
+            preview = dest / 'images' / 'preview.jpg'
+            self.assertTrue(preview.is_file())
+            self.assertEqual(preview.read_bytes(), b'preview')
+            self.assertEqual(
+                {str(path.relative_to(dest)) for path in dest.rglob('*') if path.is_file()},
+                d.RUNTIME)
+
     def test_public_html_probes_include_cancel(self):
         urls = []
         with patch.object(d, 'http', side_effect=lambda url, sha=None: urls.append(url)):

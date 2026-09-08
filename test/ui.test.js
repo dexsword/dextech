@@ -87,6 +87,27 @@ test('static pages declare matching HTTPS canonical URLs in head', () => {
   }
 });
 
+test('homepage Open Graph and Twitter images point at /images/preview.jpg', () => {
+  const root = path.resolve(__dirname, '..');
+  const previewPath = path.join(root, 'images', 'preview.jpg');
+  assert.equal(fs.existsSync(previewPath), true, 'images/preview.jpg must exist');
+
+  const dom = new JSDOM(fs.readFileSync(path.join(root, 'index.html'), 'utf8'), {
+    url: 'https://dextech.invalid/',
+  });
+  const { document } = dom.window;
+  try {
+    const ogImage = document.querySelector('meta[property="og:image"]');
+    const twitterImage = document.querySelector('meta[name="twitter:image"]');
+    assert.ok(ogImage, 'og:image meta tag must exist');
+    assert.ok(twitterImage, 'twitter:image meta tag must exist');
+    assert.equal(ogImage.getAttribute('content'), 'https://dextech.cloud/images/preview.jpg');
+    assert.equal(twitterImage.getAttribute('content'), 'https://dextech.cloud/images/preview.jpg');
+  } finally {
+    dom.window.close();
+  }
+});
+
 test('support.html footer includes privacy, terms, and Express cancel route', () => {
   const root = path.resolve(__dirname, '..');
   const dom = new JSDOM(fs.readFileSync(path.join(root, 'support.html'), 'utf8'), {

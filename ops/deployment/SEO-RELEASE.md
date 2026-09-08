@@ -7,7 +7,8 @@ health, or rollback gates.
 ## Required operator preparation before merging
 
 1. Review the `RUNTIME` change in `ops/deployment/deploy.py`. It adds exactly four
-   service HTML pages, `robots.txt`, `sitemap.xml`, and `social-preview.png`.
+   service HTML pages, `robots.txt`, and `sitemap.xml`, while retaining the
+   existing `images/preview.jpg` asset.
    The root-installed `/usr/local/sbin/dextech-deploy` does not update itself.
    A reviewed operator must install this source-contract change before the new
    main release is deployed. Preserve every other installed control-plane change.
@@ -32,7 +33,7 @@ still needs a post-release check; SMTP acceptance does not guarantee inbox place
 
 - Confirm the protected deployment and public release SHA match merged main.
 - GET all four new service pages, `/robots.txt`, `/sitemap.xml`, and
-  `/social-preview.png`; expect 200 and appropriate content types. Verify the
+  `/images/preview.jpg`; expect 200 and appropriate content types. Verify the
   published robots response includes the sitemap line, including through Cloudflare.
 - Check `https://www.dextech.cloud/` and `https://dextech.cloud/index.html?ref=test`
   redirect to the canonical apex homepage and retain the query string.
