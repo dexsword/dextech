@@ -68,7 +68,7 @@ test('homepage booking anchors and cancel route stay wired in index.html', () =>
 test('static pages declare matching HTTPS canonical URLs in head', () => {
   const root = path.resolve(__dirname, '..');
   const pages = [
-    { file: 'index.html', href: 'https://dextech.cloud' },
+    { file: 'index.html', href: 'https://dextech.cloud/' },
     { file: 'support.html', href: 'https://dextech.cloud/support.html' },
     { file: 'privacy.html', href: 'https://dextech.cloud/privacy.html' },
     { file: 'terms.html', href: 'https://dextech.cloud/terms.html' },

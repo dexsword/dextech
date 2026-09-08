@@ -361,6 +361,57 @@ app.get('/health', (_req, res) => {
   });
 });
 
+// Quote requests do not reserve a calendar slot or send mail to unverified visitors.
+const inquiryLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 5,
+  standardHeaders: true,
+  legacyHeaders: false,
+  validate: { xForwardedForHeader: false },
+  message: { error: 'Too many quote requests. Please call or email us directly.' },
+});
+
+app.post('/api/inquiries', inquiryLimiter, async (req, res) => {
+  const { name, method, contact, message, website } = req.body || {};
+  if (website) return res.status(400).json({ error: 'Please call or email us directly.' });
+  const validText = (value, min, max) => typeof value === 'string'
+    && value.trim().length >= min && value.trim().length <= max;
+  const validContact = validText(contact, 3, 254) && !/[\r\n]/.test(contact)
+    && (method === 'email'
+      ? /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(contact.trim())
+      : method === 'phone' && /^[+()0-9 .-]{7,30}$/.test(contact.trim())
+        && contact.replace(/\D/g, '').length >= 7);
+  if (!validText(name, 1, 100) || /[\r\n]/.test(name) || !validContact || !validText(message, 10, 2000)) {
+    return res.status(422).json({ error: 'Please enter your name, a valid email or phone number, and a description of at least 10 characters.' });
+  }
+  if (!EMAIL_ENABLED) {
+    return res.status(503).json({ error: 'The quote form is temporarily unavailable. Please call (845) 596-1708 or email dextech.me@gmail.com.' });
+  }
+  try {
+    const transporter = nodemailer.createTransport({
+      host: process.env.SMTP_HOST,
+      port: parseInt(process.env.SMTP_PORT || '587', 10),
+      secure: process.env.SMTP_SECURE === 'true',
+      auth: { user: process.env.SMTP_USER, pass: process.env.SMTP_PASS },
+      connectionTimeout: 10000,
+      greetingTimeout: 10000,
+      socketTimeout: 15000,
+    });
+    const result = await transporter.sendMail({
+      from: process.env.EMAIL_FROM || '"Dex Tech" <bookings@dextech.cloud>',
+      to: 'dextech.me@gmail.com',
+      ...(method === 'email' ? { replyTo: contact.trim() } : {}),
+      subject: 'New website quote request – Dex Tech',
+      text: `Name: ${name.trim()}\nPreferred contact: ${method}\nContact: ${contact.trim()}\n\n${message.trim()}`,
+    });
+    if (!result.accepted || result.accepted.length === 0) throw new Error('Delivery not accepted');
+    res.status(201).json({ success: true });
+  } catch (_) {
+    console.error('[error] Quote email delivery failed');
+    res.status(503).json({ error: 'Your request could not be sent. Please call (845) 596-1708 or email dextech.me@gmail.com.' });
+  }
+});
+
 app.get('/api/availability', async (_req, res) => {
   await refreshGCalBusy();
 
@@ -521,6 +572,16 @@ app.post('/api/bookings/:id/cancel-customer', cancelLimiter, (req, res) => {
 });
 
 // ─── Static files ─────────────────────────────────────────────────────────────
+app.use((req, res, next) => {
+  if (['/admin', '/admin.html', '/cancel', '/cancel.html'].includes(req.path)) {
+    res.set('X-Robots-Tag', 'noindex, follow');
+  }
+  if ((req.method === 'GET' || req.method === 'HEAD') && (req.hostname === 'www.dextech.cloud' || req.path === '/index.html')) {
+    const target = req.path === '/index.html' ? '/' + req.originalUrl.slice('/index.html'.length) : req.originalUrl;
+    return res.redirect(301, 'https://dextech.cloud' + target);
+  }
+  next();
+});
 app.use(express.static(__dirname));
 
 const HTML_NO_CACHE = { headers: { 'Cache-Control': 'no-store' } };
@@ -530,7 +591,13 @@ app.get('/admin', (_req, res) => res.sendFile(path.join(__dirname, 'admin.html')
 
 // ─── Global error handler ─────────────────────────────────────────────────────
 app.use((err, _req, res, _next) => {
-  console.error('[error]', err);
+  if (err.type === 'entity.parse.failed') {
+    return res.status(400).json({ error: 'Invalid JSON request' });
+  }
+  if (err.type === 'entity.too.large') {
+    return res.status(413).json({ error: 'Request is too large' });
+  }
+  console.error('[error] Request could not be processed');
   res.status(500).json({ error: 'Internal server error' });
 });
 

@@ -100,3 +100,60 @@ for (const [label, value] of [
     assert.equal(health.release_sha, 'unknown');
   });
 }
+
+const inquiry = { name: 'Test Visitor', method: 'email', contact: 'test@example.invalid', message: 'Synthetic inquiry about a slow computer', website: '' };
+async function postInquiry(address, data) {
+  return fetch(`http://${address.address}:${address.port}/api/inquiries`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data),
+  });
+}
+const fakeMail = {
+  NODE_OPTIONS: `--require=${path.join(__dirname, 'inquiry-mail-stub.cjs')}`,
+  SMTP_HOST: 'success.invalid', SMTP_USER: 'synthetic', SMTP_PASS: 'synthetic',
+};
+
+test('quote requests validate input and fail honestly when email is unavailable', async t => {
+  const { address } = await startServer(t);
+  for (const data of [null, { ...inquiry, contact: 'bad' }, { ...inquiry, message: 'short' }, { ...inquiry, method: 'sms' }]) {
+    assert.equal((await postInquiry(address, data)).status, data === null ? 400 : 422);
+  }
+  assert.equal((await postInquiry(address, inquiry)).status, 503);
+});
+
+test('quote mail accepts email and phone inquiries without creating bookings', async t => {
+  const { address } = await startServer(t, fakeMail);
+  for (const data of [inquiry, { ...inquiry, method: 'phone', contact: '(555) 555-0100' }]) {
+    const response = await postInquiry(address, data);
+    assert.equal(response.status, 201);
+    assert.deepEqual(await response.json(), { success: true });
+  }
+  const health = await fetch(`http://${address.address}:${address.port}/health`).then(r => r.json());
+  assert.equal(health.confirmed_bookings, 0);
+});
+
+for (const host of ['reject.invalid', 'unaccepted.invalid']) {
+  test(`quote transport ${host} never reports success`, async t => {
+    const { address } = await startServer(t, { ...fakeMail, SMTP_HOST: host });
+    assert.equal((await postInquiry(address, inquiry)).status, 503);
+  });
+}
+
+test('quote requests reject header injection and honeypot, and enforce rate limit', async t => {
+  const { address } = await startServer(t, fakeMail);
+  assert.equal((await postInquiry(address, { ...inquiry, contact: 'test@example.invalid\r\nBcc: x@example.invalid' })).status, 422);
+  assert.equal((await postInquiry(address, { ...inquiry, website: 'spam.invalid' })).status, 400);
+  for (let i = 0; i < 3; i++) assert.equal((await postInquiry(address, inquiry)).status, 201);
+  assert.equal((await postInquiry(address, inquiry)).status, 429);
+});
+
+test('alternate homepage redirects retain queries and utility responses carry noindex', async t => {
+  const { address } = await startServer(t);
+  const base = `http://${address.address}:${address.port}`;
+  const response = await fetch(`${base}/index.html?ref=local`, { redirect: 'manual' });
+  assert.equal(response.status, 301);
+  assert.equal(response.headers.get('location'), 'https://dextech.cloud/?ref=local');
+  for (const route of ['/admin', '/cancel', '/admin.html', '/cancel.html']) {
+    const utility = await fetch(base + route);
+    assert.match(utility.headers.get('x-robots-tag'), /noindex/);
+  }
+});
