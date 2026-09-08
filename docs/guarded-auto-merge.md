@@ -130,9 +130,14 @@ it never copies native CI results to another SHA. GitHub itself waits for pendin
 CI and required human reviews/conversations, without a local CI deadline.
 
 Per-PR concurrency cancels obsolete runs. Run ownership rejects cancelled runs,
-replaced attempts, and runs superseded by a newer relevant PR event. Closed PRs
-revoke stale requests without review. Title/body-only edits use separate ignored
-concurrency groups and a different gate job name (`Inactive PR event`), so they
+replaced attempts, and runs superseded by a newer relevant PR event. Closing or
+merging a PR does not trigger another review workflow, so it cannot cancel or
+supersede the final jobs of the review that authorized the merge. Closed events
+from older workflow revisions return inactive before candidate validation or API
+access; they cannot rewrite checks or fail because main advanced at merge.
+Reopening still runs a fresh snapshot, revokes any stale auto-merge request, and
+resets required legacy checks before review. Title/body-only edits use separate
+ignored concurrency groups and a different gate job name (`Inactive PR event`), so they
 cannot cancel a review or satisfy `merge-gate` through a skipped job. Base-retarget
 edits start both CI and review. There are no check/status triggers or production
 workflow-dispatch overrides in the review workflow.

@@ -1018,7 +1018,7 @@ test('cancelled, superseded and replaced-attempt runs cannot enable or publish a
   }
 });
 
-test('reruns reclaim existing pending head checks and close/reopen disarms without reviewing a closed PR', async t => {
+test('reruns reclaim pending checks and reopening revokes stale auto-merge requests', async t => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'dextech-rerun-'));
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
   const values = { ...env(), GITHUB_EVENT_PATH: path.join(dir, 'event'), GITHUB_OUTPUT: path.join(dir, 'output'),
@@ -1042,24 +1042,25 @@ test('reruns reclaim existing pending head checks and close/reopen disarms witho
     }
     return mergeResponse(url) || structuredClone(current);
   };
-  for (const state of ['open', 'open', 'closed', 'open']) {
-    current.state = state;
-    fs.writeFileSync(values.GITHUB_EVENT_PATH, JSON.stringify({ pull_request: current }));
+  for (const action of ['opened', 'synchronize', 'reopened']) {
+    if (action === 'reopened') current.auto_merge = { merge_method: 'squash' };
+    fs.writeFileSync(values.GITHUB_EVENT_PATH, JSON.stringify({ action, pull_request: current }));
     await c.snapshot(values, api, async () => assert.fail('unexpected retry'));
     assert.equal(checks.length, 2);
     assert.ok(checks.every(c => c.head_sha === head && c.status === 'in_progress'));
   }
-  assert.equal(mutations.length, 1);
-  assert.match(mutations[0], /disablePullRequestAutoMerge/);
-  assert.match(fs.readFileSync(values.GITHUB_OUTPUT, 'utf8'), /active=false/);
+  assert.equal(mutations.length, 2);
+  assert.ok(mutations.every(query => /disablePullRequestAutoMerge/.test(query)));
+  assert.doesNotMatch(fs.readFileSync(values.GITHUB_OUTPUT, 'utf8'), /active=false/);
 });
 
 test('workflow avoids recursive and irrelevant events and admits only base-controlled PR events', () => {
   const workflow = fs.readFileSync(path.join(__dirname, '../.github/workflows/codex-review.yml'), 'utf8');
   assert.doesNotMatch(workflow, /\bcheck_run:|\bcheck_suite:|\bstatus:/);
-  assert.match(workflow, /converted_to_draft, closed, edited/);
+  const events = workflow.match(/types: \[([^\]]+)\]/)[1].split(', ');
+  assert.deepEqual(events, ['opened', 'synchronize', 'reopened', 'ready_for_review', 'converted_to_draft', 'edited']);
   assert.match(workflow, /cancel-in-progress: true/);
-  assert.match(workflow, /converted_to_draft, closed/);
+  assert.equal(events.includes('closed'), false, 'Closing cannot enqueue a run in the active review concurrency group');
   assert.doesNotMatch(workflow, /workflow_dispatch:/);
   assert.match(workflow, /ref: \$\{\{ needs.snapshot.outputs.base \}\}/);
   assert.doesNotMatch(workflow, /ref: \$\{\{ inputs\./);
@@ -1809,7 +1810,7 @@ test('workflow skips draft key-bearing work without emitting a skipped required 
     const block = workflow.split(`\n  ${job}:\n`)[1].split(/\n  [a-z-]+:\n/)[0];
     assert.match(block, /needs\.snapshot\.outputs\.active == 'true'/);
   }
-  assert.match(workflow, /types: \[opened, synchronize, reopened, ready_for_review, converted_to_draft, closed, edited\]/);
+  assert.match(workflow, /types: \[opened, synchronize, reopened, ready_for_review, converted_to_draft, edited\]/);
   assert.match(workflow, /cancel-in-progress: true/);
 });
 
@@ -1834,4 +1835,24 @@ test('native-only draft cleanup does not create or rewrite custom checks', async
   await c.snapshot(fixture.values, fixture.api);
   assert.equal(fixture.calls.some(c => /check-runs/.test(c.url)), false);
   assert.equal(fixture.output(), 'active=false\ndraft=true\n');
+});
+
+test('merged and unmerged closed events ignore stale bases without any API calls or retries', async t => {
+  for (const merged of [false, true]) {
+    for (const draft of [false, true]) {
+      const fixture = draftSnapshotFixture(t, { action: 'closed', workflowSha: 'c'.repeat(40),
+        current: { ...pr(), state: 'closed', merged, draft, mergeable: null, merge_commit_sha: null } });
+      await c.snapshot(fixture.values, () => assert.fail('Closed events cannot read or mutate GitHub state'),
+        () => assert.fail('Closed events cannot wait for a merge candidate'));
+      assert.equal(fixture.output(), 'active=false\n');
+    }
+  }
+});
+
+test('closed-event no-op retains trusted repository and event-source validation', async t => {
+  for (const overrides of [{ GITHUB_REPOSITORY: 'fork/dextech' }, { GITHUB_EVENT_NAME: 'pull_request' }]) {
+    const fixture = draftSnapshotFixture(t, { action: 'closed' });
+    await assert.rejects(c.snapshot({ ...fixture.values, ...overrides }, () => assert.fail('Unexpected API access')));
+    assert.equal(fixture.output(), '');
+  }
 });

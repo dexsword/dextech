@@ -219,6 +219,9 @@ async function snapshot(env, api, sleep = wait) {
   const event = JSON.parse(fs.readFileSync(env.GITHUB_EVENT_PATH, 'utf8'));
   if (env.GITHUB_REPOSITORY !== REPOSITORY) fail();
   if (env.GITHUB_EVENT_NAME !== 'pull_request_target') fail();
+  // Older workflow revisions may still deliver closed events. They have no
+  // merge candidate to validate and must not mutate checks or authorization.
+  if (event.action === 'closed') return output(env, { active: false });
   // Only a base retarget is a relevant edit; title/body edits cannot disarm a run.
   if (event.action === 'edited' &&
       !(typeof event.changes?.base?.ref?.from === 'string' && event.changes.base.ref.from.length > 0)) {
