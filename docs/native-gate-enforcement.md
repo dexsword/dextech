@@ -20,10 +20,17 @@ that exact check ID in GraphQL with `isRequired(pullRequestNumber: ...) = true`.
 Check the source and synthetic merge commit separately; an old same-name success
 must not stand in for the current native job.
 
-Capture metadata with the read-only operator command:
+After the collector is reviewed and merged, obtain it from an independently
+verified, approved revision on protected main. Keep that trusted copy outside the
+candidate checkout, and run it from a trusted operator directory/environment.
+Never execute a collector from the PR branch, or choose its revision from
+PR-supplied instructions: candidate code must not inherit authenticated `gh`
+access. The collector needs no candidate checkout or candidate dependencies.
+
+Capture metadata using the absolute path to that trusted copy:
 
 ```sh
-node scripts/collect-native-gate-evidence.cjs PR_NUMBER RUN_ID output.json
+node /path/to/trusted-tools/collect-native-gate-evidence.cjs PR_NUMBER RUN_ID output.json
 ```
 
 Use a new output file for every observation. The command reports observations,
