@@ -5,7 +5,7 @@ const path = require('node:path');
 const { execFileSync } = require('node:child_process');
 const { TextDecoder } = require('node:util');
 const policy = require('./policy.cjs');
-const { REPOSITORY, CHECKS, NATIVE_GATE, sha } = policy;
+const { REPOSITORY, NATIVE_GATE, sha } = policy;
 const MAX_PROMPT = 600000;
 const FEEDBACK_MARKER = '<!-- dextech-codex-review-feedback:v1 -->';
 const DIAGNOSTICS = Object.freeze({
@@ -92,7 +92,7 @@ function binding(env, match) {
   return `${env.GITHUB_RUN_ID}:${env.GITHUB_RUN_ATTEMPT}:${match.head}:${match.merge}:${match.base}`;
 }
 
-// Retry readiness after disarming/pending checks, before freezing the merge binding.
+// Retry readiness after disarming, before freezing the merge binding.
 // Captured source/base identity never changes, including across retries.
 async function discoverMerge(api, match, sleep) {
   for (let attempt = 0; ; attempt++) {
@@ -116,11 +116,6 @@ async function discoverMerge(api, match, sleep) {
   }
 }
 
-function checkBinding(env, match) {
-  if (!/^\d+$/.test(env.GITHUB_RUN_ID) || !/^\d+$/.test(env.GITHUB_RUN_ATTEMPT)) fail();
-  return `dextech:${match.number}:${env.GITHUB_RUN_ID}:${env.GITHUB_RUN_ATTEMPT}:${match.head}:${match.base}`;
-}
-
 async function activeRun(env, api, number = env.PR_NUMBER) {
   const run = await api(`/repos/${REPOSITORY}/actions/runs/${env.GITHUB_RUN_ID}`);
   if (run.status !== 'in_progress' || String(run.run_attempt) !== env.GITHUB_RUN_ATTEMPT ||
@@ -131,24 +126,24 @@ async function activeRun(env, api, number = env.PR_NUMBER) {
   return run;
 }
 
-// Read the enforced configuration, not a PR input or a repository variable.
-// During migration both legacy requirements must remain together. Once only
-// the native gate is required, legacy check creation/publication stops.
+// Read enforced rules, never PR inputs. Retired contexts must be removed before
+// this controller is installed; extra protections remain GitHub's responsibility.
 async function gateConfiguration(api) {
   const rules = await api(`/repos/${REPOSITORY}/rules/branches/main`);
   if (!Array.isArray(rules)) fail('ci');
   const protections = rules.filter(r => r.type === 'required_status_checks');
   if (!protections.some(r => r.parameters?.strict_required_status_checks_policy === true)) fail('ci');
   const checks = protections.flatMap(r => r.parameters?.required_status_checks || []);
-  const has = name => checks.some(c => c.context === name && c.integration_id === 15368);
-  if (!has('checks') || has(CHECKS.gate) !== has(CHECKS.eligible) ||
-      (!has(NATIVE_GATE) && !has(CHECKS.gate))) fail('ci');
-  return { legacy: has(CHECKS.gate), native: has(NATIVE_GATE) };
+  for (const name of ['checks', NATIVE_GATE]) {
+    const configured = checks.filter(c => c.context === name);
+    if (configured.length !== 1 || configured[0].integration_id !== 15368) fail('ci');
+  }
+  if (checks.some(c => ['Codex Review / gate', 'Auto Merge / eligible'].includes(c.context))) fail('ci');
 }
 
 // Select the native job from THIS run attempt. A same-name success in an older
 // suite on the same SHA is not evidence that the current gate is running.
-async function nativeGate(env, api, match, allowCompleted = false) {
+async function nativeGate(env, api, match) {
   const run = await activeRun(env, api);
   const listed = await api(`/repos/${REPOSITORY}/actions/runs/${env.GITHUB_RUN_ID}/attempts/${env.GITHUB_RUN_ATTEMPT}/jobs?per_page=100`);
   if (!Array.isArray(listed.jobs) || listed.total_count !== listed.jobs.length || listed.total_count > 100) fail('pending');
@@ -160,59 +155,12 @@ async function nativeGate(env, api, match, allowCompleted = false) {
   if (!/^[1-9][0-9]*$/.test(id) || String(job.run_id) !== env.GITHUB_RUN_ID ||
       String(job.run_attempt) !== env.GITHUB_RUN_ATTEMPT || job.head_sha !== match.head) fail('obsolete');
   const check = await api(`/repos/${REPOSITORY}/check-runs/${id}`);
-  const validState = value => (value.status === 'in_progress' && value.conclusion === null) ||
-    (allowCompleted && value.status === 'completed' && value.conclusion === 'success');
+  const validState = value => value.status === 'in_progress' && value.conclusion === null;
   if (check.id !== Number(id) || check.name !== NATIVE_GATE || check.head_sha !== match.head ||
       !Number.isSafeInteger(run.check_suite_id) || check.check_suite?.id !== run.check_suite_id ||
       check.app?.id !== 15368 || check.app.slug !== 'github-actions' ||
       !validState(job) || !validState(check)) fail('pending');
   return check.id;
-}
-
-// Draft cleanup and ready review share the same fail-closed invalidation.
-async function resetLegacyChecks(env, api, match, config) {
-  const ids = {};
-  const listed = config.legacy ? await api(`/repos/${REPOSITORY}/commits/${match.head}/check-runs?per_page=100&filter=all`) :
-    { check_runs: [], total_count: 0 };
-  if (!Array.isArray(listed.check_runs) || listed.total_count > 100) fail();
-  for (const kind of config.legacy ? ['gate', 'eligible'] : []) {
-    const live = await api(`/repos/${REPOSITORY}/pulls/${match.number}`);
-    if (!policy.sameCandidate(live, match)) fail('stale');
-    await activeRun(env, api, match.number);
-    const existing = listed.check_runs.filter(c => c.name === CHECKS[kind] && c.app?.slug === 'github-actions');
-    if (existing.some(c => !Number.isSafeInteger(c.id) || c.head_sha !== match.head)) fail();
-    const check = existing.filter(c => c.status === 'in_progress' && c.conclusion === null)
-      .sort((a, b) => b.id - a.id)[0];
-    if (check && (!Number.isSafeInteger(check.id) || check.head_sha !== match.head)) fail();
-    // Reclaim pending checks; supersede completed ones (GitHub retains their conclusion).
-    // Changing ownership makes old receipts invalid.
-    const body = { name: CHECKS[kind], status: 'in_progress',
-      external_id: checkBinding(env, match),
-      details_url: `https://github.com/${REPOSITORY}/actions/runs/${env.GITHUB_RUN_ID}`,
-      output: { title: 'Trusted review pending for this exact source head',
-        summary: 'Incomplete review, CI, or authorization cannot enable guarded merging.' } };
-    if (!check) body.head_sha = match.head;
-    const result = await api(check ? `/repos/${REPOSITORY}/check-runs/${check.id}` :
-      `/repos/${REPOSITORY}/check-runs`, check ? 'PATCH' : 'POST', body);
-    if (!Number.isSafeInteger(result.id) || result.status !== 'in_progress' || result.conclusion !== null ||
-        result.head_sha !== match.head || result.external_id !== checkBinding(env, match)) fail('pending');
-    ids[`${kind}_id`] = result.id;
-    // Duplicate completed names can remain required even when the latest passes.
-    // First confirm the replacement is pending; then preserve old results under
-    // historical names. Never rewrite a native CI check or manufacture success.
-    for (const old of existing.filter(c => c.id !== result.id)) {
-      if (!policy.sameCandidate(await api(`/repos/${REPOSITORY}/pulls/${match.number}`), match)) fail('stale');
-      await activeRun(env, api, match.number);
-      const pending = await api(`/repos/${REPOSITORY}/check-runs/${result.id}`);
-      if (pending.external_id !== checkBinding(env, match) || pending.head_sha !== match.head ||
-          pending.status !== 'in_progress' || pending.conclusion !== null) fail('pending');
-      const historical = await api(`/repos/${REPOSITORY}/check-runs/${old.id}`, 'PATCH',
-        { name: `${CHECKS[kind]} (superseded ${old.id})` });
-      if (historical.id !== old.id || historical.name !== `${CHECKS[kind]} (superseded ${old.id})` ||
-          historical.head_sha !== match.head || historical.conclusion !== old.conclusion) fail('pending');
-    }
-  }
-  return ids;
 }
 
 async function snapshot(env, api, sleep = wait) {
@@ -243,8 +191,7 @@ async function snapshot(env, api, sleep = wait) {
     if (!policy.sameCandidate(pr, { number, head: event.pull_request.head.sha, base: pr.base?.sha })) fail('stale');
     await activeRun(env, api, number);
     await revoke(pr, api);
-    const config = await gateConfiguration(api);
-    await resetLegacyChecks(env, api, { number, head: pr.head.sha, base: pr.base.sha }, config);
+    await gateConfiguration(api);
     return output(env, { active: false, draft: true });
   }
   const main = await api(`/repos/${REPOSITORY}/git/ref/heads/main`);
@@ -253,14 +200,13 @@ async function snapshot(env, api, sleep = wait) {
       !policy.sameCandidate({ ...pr, state: 'open' }, match)) fail('stale');
   if (env.GITHUB_SHA !== match.base) fail('stale');
   await activeRun(env, api, number);
-  // Invalidate BEFORE waiting on CI, merge-ref availability, or model review.
+  // Disarm BEFORE waiting on CI, merge-ref availability, or model review.
   await revoke(pr, api);
   if (pr.state !== 'open') return output(env, { active: false });
-  const config = await gateConfiguration(api);
-  const ids = await resetLegacyChecks(env, api, match, config);
+  await gateConfiguration(api);
   match.merge = await discoverMerge(api, match, sleep);
-  output(env, { active: true, draft: pr.draft, legacy: config.legacy,
-    head: match.head, base: match.base, merge: match.merge, number, ...ids });
+  output(env, { active: true, draft: pr.draft,
+    head: match.head, base: match.base, merge: match.merge, number });
 }
 
 function git(cwd, args) {
@@ -340,49 +286,6 @@ function prepare(cwd, match, env) {
   fs.mkdirSync(home, { recursive: true });
   fs.copyFileSync(path.join(__dirname, 'config.toml'), path.join(home, 'config.toml'));
   fs.writeFileSync(path.join(env.RUNNER_TEMP, 'codex-review-prompt.txt'), prompt, { mode: 0o600 });
-}
-
-async function publish(env, api) {
-  const match = expected(env);
-  // Validate BOTH checks before either write. Pending checks are the latch that
-  // lets native auto-merge wait for GitHub branch protection.
-  const ids = await pendingChecks(env, api, match);
-  const pr = await currentCandidate(api, match);
-  if (env.PR_DRAFT !== 'false' || pr.draft !== false) fail('inactive');
-  const reviewOK = env.DISARM_RESULT === 'success' && policy.reviewPass(env.REVIEW_JSON, env.REVIEW_RESULT);
-  const classificationOK = env.ELIGIBILITY_RESULT === 'success' && ['true', 'false'].includes(env.ELIGIBLE);
-  const eligible = classificationOK && env.ELIGIBLE === 'true';
-  const manual = env.AUTO_MERGE_RESULT === 'success' && env.REQUEST_RESULT === 'skipped' &&
-    classificationOK && !eligible && pr.auto_merge === null;
-  const confirmed = env.AUTO_MERGE_RESULT === 'success' &&
-    env.CONFIRMED_HEAD === match.head && env.CONFIRMED_BASE === match.base &&
-    env.CONFIRMED_MERGE === match.merge &&
-    env.CONFIRMED_RUN === binding(env, match) && pr.draft === false &&
-    appRequestMatches(pr, env.CONFIRMED_APP);
-  const passed = reviewOK && classificationOK && (manual || confirmed);
-  for (const kind of ['gate', 'eligible']) {
-    const conclusion = kind === 'gate' ? (passed ? 'success' : 'failure') :
-      (classificationOK && !eligible ? 'neutral' : (passed ? 'success' : 'failure'));
-    // Revalidate both bindings before EACH result, including between writes.
-    if (passed && !manual) await requirements(env, api, match, { allowCompleted: true });
-    const live = await currentCandidate(api, match);
-    if (passed && !manual && (live.draft !== false || !appRequestMatches(live, env.CONFIRMED_APP))) fail('unavailable');
-    if (passed && live.draft !== false) fail('inactive');
-    await activeRun(env, api);
-    const owned = await api(`/repos/${REPOSITORY}/check-runs/${ids[kind]}`);
-    if (owned.external_id !== checkBinding(env, match) || owned.head_sha !== match.head ||
-        owned.status !== 'in_progress') fail('obsolete');
-    await api(`/repos/${REPOSITORY}/check-runs/${ids[kind]}`, 'PATCH', {
-      status: 'completed', conclusion,
-      output: { title: kind === 'gate' ? (passed ? 'Review passed' : 'Review failed closed') :
-        (eligible && passed ? 'Eligible for guarded auto-merge' : 'Manual review required'),
-      summary: `Reviewed head: ${match.head}. Merge candidate: ${match.merge}. ` + (kind === 'gate' ?
-        'Requires a valid passing review and, for eligible ready PRs, confirmed native squash auto-merge before successful checks.' :
-        'Only the trusted base allowlist authorizes auto-merge. A neutral result is intentionally not a CI failure.') }
-    });
-  }
-  output(env, { passed, eligible });
-  if (!passed || !classificationOK) fail('invalid');
 }
 
 function feedbackBody(result, match) {
@@ -468,21 +371,6 @@ async function disarmAutoMerge(env, api) {
   await revoke(pr, api);
 }
 
-async function pendingChecks(env, api, match) {
-  await activeRun(env, api);
-  const ids = {};
-  for (const kind of ['gate', 'eligible']) {
-    const id = env[kind === 'gate' ? 'GATE_ID' : 'ELIGIBLE_ID'];
-    if (!/^[1-9][0-9]*$/.test(id)) fail();
-    const check = await api(`/repos/${REPOSITORY}/check-runs/${id}`);
-    if (check.name !== CHECKS[kind] || check.head_sha !== match.head ||
-        check.external_id !== checkBinding(env, match) || check.app?.slug !== 'github-actions') fail('stale');
-    if (check.status !== 'in_progress' || check.conclusion !== null) fail('pending');
-    ids[kind] = id;
-  }
-  return ids;
-}
-
 async function currentCandidate(api, match, ready = false, discovering = false) {
   const main = await api(`/repos/${REPOSITORY}/git/ref/heads/main`);
   if (main.object?.sha !== match.base) fail('stale');
@@ -503,10 +391,9 @@ async function currentCandidate(api, match, ready = false, discovering = false) 
   return pr;
 }
 
-async function requirements(env, api, match, { allowCompleted = false } = {}) {
-  const config = await gateConfiguration(api);
-  if (env.LEGACY_CHECKS !== String(config.legacy)) fail('stale');
-  const nativeId = await nativeGate(env, api, match, allowCompleted);
+async function requirements(env, api, match) {
+  await gateConfiguration(api);
+  const nativeId = await nativeGate(env, api, match);
   const result = await api('/graphql', 'POST', {
     query: `query($number: Int!) { repository(owner: "dexsword", name: "dextech") {
       autoMergeAllowed squashMergeAllowed pullRequest(number: $number) {
@@ -543,18 +430,14 @@ async function requirements(env, api, match, { allowCompleted = false } = {}) {
   const contexts = commit?.statusCheckRollup?.contexts;
   if (commit?.oid !== match.head || contexts?.pageInfo?.hasNextPage !== false || !Array.isArray(contexts.nodes)) fail('ci');
   const required = contexts.nodes.filter(c => c.isRequired === true);
-  for (const name of ['checks', ...(config.legacy ? Object.values(CHECKS) : [])]) {
-    const found = required.filter(c => c.name === name && c.checkSuite?.app?.slug === 'github-actions' &&
-      c.checkSuite.app.databaseId === 15368);
-    if (found.length !== 1) fail('ci');
-    if (name === 'checks' && !checkAllowsNativeWait(found[0])) fail('ci');
-  }
+  const ci = required.filter(c => c.name === 'checks' && c.checkSuite?.app?.slug === 'github-actions' &&
+    c.checkSuite.app.databaseId === 15368);
+  if (ci.length !== 1 || !checkAllowsNativeWait(ci[0])) fail('ci');
   const native = contexts.nodes.filter(c => c.databaseId === nativeId && c.name === NATIVE_GATE &&
     c.checkSuite?.app?.slug === 'github-actions' && c.checkSuite.app.databaseId === 15368);
   if (native.length !== 1 || !checkAllowsNativeWait(native[0]) ||
-      (config.native && native[0].isRequired !== true)) fail('ci');
-  if (required.some(c => !Object.values(CHECKS).includes(c.name) &&
-      c.name !== NATIVE_GATE &&
+      native[0].isRequired !== true) fail('ci');
+  if (required.some(c => c.name !== NATIVE_GATE &&
       !checkAllowsNativeWait(c))) fail('ci');
 }
 
@@ -621,7 +504,6 @@ async function requestAutoMerge(env, api, appApi) {
   const appLogin = `${env.MERGE_APP_SLUG}[bot]`;
   if (env.DISARM_RESULT !== 'success' || env.ELIGIBILITY_RESULT !== 'success' ||
       env.ELIGIBLE !== 'true' || !policy.reviewPass(env.REVIEW_JSON, env.REVIEW_RESULT)) fail('invalid');
-  if (env.LEGACY_CHECKS === 'true') await pendingChecks(env, api, match);
   await requirements(env, api, match);
   // The live PR read is immediately before the mutation. expectedHeadOid also
   // binds the head atomically inside GitHub; strict branch protection guards main.
@@ -650,7 +532,6 @@ async function main(env) {
     case 'snapshot': return snapshot(env, client(env));
     case 'classify': return output(env, classifyCandidate(path.resolve('candidate'), expected(env)));
     case 'prepare': return prepare(path.resolve('candidate'), expected(env), env);
-    case 'publish': return publish(env, client(env));
     case 'gate-prepare': return output(env, await prepareNativeGate(env, client(env)));
     case 'gate-finish': return output(env, await finishNativeGate(env, client(env)));
     case 'feedback': return publishFeedback(env, client(env));
@@ -666,5 +547,5 @@ if (require.main === module) main(process.env).catch(error => {
 });
 
 module.exports = { expected, client, snapshot, candidate, readBlob, classifyCandidate, prepare,
-  mergeAppClient, publish, diagnostic, feedbackBody, publishFeedback, disarmAutoMerge, requestAutoMerge, requirements,
+  mergeAppClient, diagnostic, feedbackBody, publishFeedback, disarmAutoMerge, requestAutoMerge, requirements,
   gateConfiguration, nativeGate, prepareNativeGate, finishNativeGate };

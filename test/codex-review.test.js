@@ -17,11 +17,10 @@ const pr = () => ({ auto_merge: null, number: 12, node_id: 'PR_fixture', state: 
   base: { repo: { full_name: 'dexsword/dextech' }, ref: 'main', sha: base },
   head: { repo: { full_name: 'dexsword/dextech' }, sha: head } });
 const clean = () => ({ verdict: 'pass', confidence: 0.97, blocking_findings: [], summary: 'Correct patch.' });
-const env = () => ({ LEGACY_CHECKS: 'true', SNAPSHOT_RESULT: 'success', SNAPSHOT_ACTIVE: 'true', PR_DRAFT: 'false', MERGE_APP_SLUG: 'dextech-merge', HEAD_SHA: head, BASE_SHA: base, MERGE_SHA: merge, PR_NUMBER: '12', GITHUB_RUN_ID: '123',
-  GITHUB_RUN_ATTEMPT: '1', GATE_ID: '101', ELIGIBLE_ID: '102', ELIGIBLE: 'true',
+const env = () => ({ SNAPSHOT_RESULT: 'success', SNAPSHOT_ACTIVE: 'true', PR_DRAFT: 'false', MERGE_APP_SLUG: 'dextech-merge', HEAD_SHA: head, BASE_SHA: base, MERGE_SHA: merge, PR_NUMBER: '12', GITHUB_RUN_ID: '123',
+  GITHUB_RUN_ATTEMPT: '1', ELIGIBLE: 'true',
   AUTO_MERGE_RESULT: 'success', REQUEST_RESULT: 'skipped', DISARM_RESULT: 'success', ELIGIBILITY_RESULT: 'success', REVIEW_RESULT: 'success', REVIEW_JSON: JSON.stringify(clean()) });
-const check = kind => ({ name: p.CHECKS[kind], head_sha: head, external_id: `dextech:12:123:1:${head}:${base}`,
-  app: { slug: 'github-actions' }, status: 'in_progress', conclusion: null });
+const retiredChecks = { gate: 'Codex Review / gate', eligible: 'Auto Merge / eligible' };
 
 function readiness(current = pr()) {
   const native = { name: 'checks', status: 'COMPLETED', conclusion: 'SUCCESS', isRequired: true,
@@ -31,15 +30,14 @@ function readiness(current = pr()) {
     isDraft: current.draft, mergeable: 'MERGEABLE', reviewDecision: null,
     reviewThreads: { pageInfo: { hasNextPage: false }, nodes: [] },
     commits: { nodes: [{ commit: { oid: head, statusCheckRollup: { contexts: {
-      pageInfo: { hasNextPage: false }, nodes: [native, { ...native, name: p.NATIVE_GATE, databaseId: 103, status: 'IN_PROGRESS', conclusion: null, isRequired: false }, ...Object.values(p.CHECKS).map(name =>
-        ({ ...native, name, status: 'IN_PROGRESS', conclusion: null }))]
+      pageInfo: { hasNextPage: false }, nodes: [native, { ...native, name: p.NATIVE_GATE, databaseId: 103, status: 'IN_PROGRESS', conclusion: null, isRequired: true }]
     } } } }] }, potentialMergeCommit: { oid: merge, statusCheckRollup: null }
   } } } };
 }
 
-function configuredRules(native = false, legacy = true) {
+function configuredRules(native = true, legacy = false) {
   return [{ type: 'required_status_checks', parameters: { strict_required_status_checks_policy: true,
-    required_status_checks: ['checks', ...(native ? [p.NATIVE_GATE] : []), ...(legacy ? Object.values(p.CHECKS) : [])]
+    required_status_checks: ['checks', ...(native ? [p.NATIVE_GATE] : []), ...(legacy ? Object.values(retiredChecks) : [])]
       .map(context => ({ context, integration_id: 15368 })) } }];
 }
 function gateJob() {
@@ -63,12 +61,10 @@ function mergeResponse(endpoint) {
   return null;
 }
 
-function mockAPI(current = pr(), transform = value => value) {
+function mockAPI(current = pr()) {
   const calls = [];
   const api = async (endpoint, method = 'GET', body) => {
     calls.push({ endpoint, method, body });
-    if (endpoint.endsWith('/check-runs/101')) return transform(check('gate'));
-    if (endpoint.endsWith('/check-runs/102')) return transform(check('eligible'));
     if (mergeResponse(endpoint)) return mergeResponse(endpoint);
     if (endpoint.endsWith('/pulls/12')) return current;
     if (endpoint === '/graphql' && body.query.startsWith('query')) return readiness(current);
@@ -189,18 +185,6 @@ test('fork, draft, wrong repository/base, closed and stale PR cannot request aut
   assert.equal(p.mayRequest(pr(), expected, true, false), false);
 });
 
-test('gate IDs, run attempt, exact SHA and pending state are rechecked before any write', async () => {
-  for (const mutate of [
-    x => ({ ...x, conclusion: 'neutral' }), x => ({ ...x, status: 'completed' }),
-    x => ({ ...x, head_sha: base }), x => ({ ...x, external_id: `123:0:${head}` }),
-    x => ({ ...x, app: { slug: 'other' } }), x => ({ ...x, name: 'spoof' })
-  ]) {
-    const mock = mockAPI(pr(), mutate);
-    await assert.rejects(c.requestAutoMerge(env(), mock.api));
-    assert.equal(mock.calls.some(call => call.body?.query?.startsWith('mutation')), false);
-  }
-});
-
 test('native squash auto-merge waits on GitHub protections and atomically binds reviewed head', async () => {
   const mock = mockAPI();
   // No immediate merge endpoint, approvals, admin bypass, or simulated CI passes.
@@ -231,28 +215,6 @@ test('same-repo check creation rejects forks before any API/key job can run', as
     GITHUB_SHA: base, GITHUB_REPOSITORY: 'dexsword/dextech', GITHUB_EVENT_NAME: 'pull_request_target' },
   async () => { called = true; }));
   assert.equal(called, false);
-});
-
-test('publisher fails closed on review timeout but ineligibility alone stays neutral', async t => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'dextech-review-publish-'));
-  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
-  for (const success of [true, false]) {
-    const writes = [];
-    const api = async (endpoint, method, body) => {
-      if (method === 'PATCH') { writes.push(body); return {}; }
-      if (mergeResponse(endpoint)) return mergeResponse(endpoint);
-      if (endpoint.endsWith('/pulls/12')) return pr();
-      return check(endpoint.endsWith('101') ? 'gate' : 'eligible');
-    };
-    const values = { ...env(), GITHUB_OUTPUT: path.join(dir, `output-${success}`),
-      REVIEW_JSON: JSON.stringify(clean()), REVIEW_RESULT: success ? 'success' : 'failure',
-      ELIGIBILITY_RESULT: 'success', ELIGIBLE: 'false', DISARM_RESULT: 'success' };
-    if (success) await c.publish(values, api);
-    else await assert.rejects(c.publish(values, api));
-    assert.equal(writes[0].conclusion, success ? 'success' : 'failure');
-    assert.equal(writes[1].conclusion, 'neutral');
-    assert.equal(JSON.stringify(writes).includes('Correct patch.'), false);
-  }
 });
 
 test('valid blocking findings create one metadata-only exact-head PR feedback comment', async () => {
@@ -366,7 +328,7 @@ test('workflow trust boundaries, final Codex step, pins and self-exclusion remai
   assert.match(workflow, /ELIGIBLE: \$\{\{ needs\.eligibility\.outputs\.eligible \}\}/);
   assert.match(workflow, /PR_DRAFT: \$\{\{ needs\.snapshot\.outputs\.draft \}\}/);
   const feedback = workflow.split('\n  feedback:')[1].split('\n  auto-merge:')[0];
-  assert.match(feedback, /needs: \[snapshot, review, publish\]/);
+  assert.match(feedback, /needs: \[snapshot, review, auto-merge\]/);
   assert.match(feedback, /permissions:\n      contents: read\n      pull-requests: write\n/);
   assert.doesNotMatch(feedback, /OPENAI_API_KEY|checks: write|contents: write/);
   assert.match(feedback, /control\.cjs feedback/);
@@ -379,7 +341,7 @@ test('workflow trust boundaries, final Codex step, pins and self-exclusion remai
 });
 
 
-test('previous native auto-merge is disabled before publishing eligibility/gate results', async () => {
+test('previous native auto-merge is disabled before native authorization', async () => {
   const current = { ...pr(), auto_merge: { merge_method: 'squash', enabled_by: { login: 'dextech-merge[bot]' } } };
   const calls = [];
   let disabled = false;
@@ -393,7 +355,7 @@ test('previous native auto-merge is disabled before publishing eligibility/gate 
   assert.match(calls[1].body.query, /disablePullRequestAutoMerge/);
   assert.doesNotMatch(calls[1].body.query, /enablePullRequestAutoMerge|expectedHeadOid/);
   const workflow = fs.readFileSync(path.join(__dirname, '../.github/workflows/codex-review.yml'), 'utf8');
-  assert.match(workflow, /needs: \[snapshot, eligibility, review, disarm, auto-merge\]/);
+  assert.match(workflow, /needs: \[snapshot, disarm, eligibility, review\]/);
   assert.match(workflow, /DISARM_RESULT: \$\{\{ needs.disarm.result \}\}/);
 });
 
@@ -420,40 +382,6 @@ test('review preparation treats PR instructions as data and never executes candi
   assert.equal(fs.existsSync(path.join(repo, 'EXECUTED')), false);
   assert.deepEqual(fs.readdirSync(path.join(dir, 'codex-review-work')), []);
   assert.match(fs.readFileSync(path.join(dir, 'codex-review-home/config.toml'), 'utf8'), /shell_tool = false/);
-});
-
-test('failed revocation prevents a clean high-confidence review from passing', async t => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'dextech-review-revoke-'));
-  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
-  const writes = [];
-  const api = async (endpoint, method, body) => {
-    if (method === 'PATCH') { writes.push(body); return {}; }
-    if (mergeResponse(endpoint)) return mergeResponse(endpoint);
-      if (endpoint.endsWith('/pulls/12')) return pr();
-      return check(endpoint.endsWith('101') ? 'gate' : 'eligible');
-  };
-  await assert.rejects(c.publish({ ...env(), GITHUB_OUTPUT: path.join(dir, 'output'),
-    REVIEW_JSON: JSON.stringify(clean()), REVIEW_RESULT: 'success',
-    ELIGIBILITY_RESULT: 'success', DISARM_RESULT: 'failure' }, api));
-  assert.equal(writes[0].conclusion, 'failure');
-});
-
-test('snapshot creates pending checks on the source head before discovering the merge candidate', async t => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'dextech-review-snapshot-'));
-  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
-  fs.writeFileSync(path.join(dir, 'event.json'), JSON.stringify({ pull_request: pr() }));
-  const writes = [];
-  await c.snapshot({ ...env(), GITHUB_EVENT_PATH: path.join(dir, 'event.json'),
-    GITHUB_OUTPUT: path.join(dir, 'output'), GITHUB_SHA: base,
-    GITHUB_REPOSITORY: 'dexsword/dextech', GITHUB_EVENT_NAME: 'pull_request_target' },
-  async (endpoint, method, body) => {
-    if (method === 'POST') { writes.push(body); return { ...body, id: 100 + writes.length, conclusion: null }; }
-    if (mergeResponse(endpoint)) return mergeResponse(endpoint);
-    assert.equal(endpoint, '/repos/dexsword/dextech/pulls/12'); return pr();
-  });
-  assert.deepEqual(writes.map(x => x.name), [p.CHECKS.gate, p.CHECKS.eligible]);
-  assert.ok(writes.every(x => x.head_sha === head && x.status === 'in_progress' && x.external_id === `dextech:12:123:1:${head}:${base}`));
-  assert.match(fs.readFileSync(path.join(dir, 'output'), 'utf8'), new RegExp(`head=${head}`));
 });
 
 test('both exact-head candidate checkouts fetch full history without tags or stored credentials', () => {
@@ -603,28 +531,16 @@ test('comment API never receives model-provided sensitive text on creation, upda
 
 function orderAPI({ existing, rejectRequest = false, badMutation = false, unconfirmed = false,
   changedMain = false, current = pr() } = {}) {
-  const calls = [], checks = { gate: check('gate'), eligible: check('eligible') };
+  const calls = [];
   current = structuredClone(current);
   if (existing) current.auto_merge = { merge_method: existing, enabled_by: { login: 'dextech-merge[bot]' } };
   const api = async (endpoint, method = 'GET', body) => {
     calls.push({ endpoint, method, body });
-    for (const [kind, id] of [['gate', '101'], ['eligible', '102']]) {
-      if (endpoint.endsWith(`/check-runs/${id}`)) {
-        if (method === 'PATCH') {
-          if (body.conclusion === 'success' && current.draft === false) {
-            assert.equal(current.auto_merge?.merge_method, 'squash', 'success requires native confirmation');
-          }
-          Object.assign(checks[kind], body);
-        }
-        return { ...checks[kind] };
-      }
-    }
     if (endpoint.endsWith('/git/ref/heads/main')) return { object: { sha: changedMain ? 'c'.repeat(40) : base } };
     if (mergeResponse(endpoint)) return mergeResponse(endpoint);
     if (endpoint.endsWith('/pulls/12')) return structuredClone(current);
     if (endpoint === '/graphql' && body.query.startsWith('query')) return readiness(current);
     if (endpoint === '/graphql') {
-      assert.ok(Object.values(checks).every(x => x.status === 'in_progress' && x.conclusion === null));
       if (rejectRequest) throw new Error('SYNTHETIC_UNTRUSTED_API_BODY');
       if (!unconfirmed) current.auto_merge = { merge_method: 'squash', enabled_by: { login: 'dextech-merge[bot]' } };
       return { data: { enablePullRequestAutoMerge: { pullRequest: {
@@ -633,50 +549,16 @@ function orderAPI({ existing, rejectRequest = false, badMutation = false, unconf
     }
     assert.fail('Unexpected mock request');
   };
-  return { calls, checks, api };
+  return { calls, api };
 }
 
-function publicationEnv(t, confirmation = {}) {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'dextech-order-publish-'));
+function confirmationEnv(t, confirmation = {}) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'dextech-native-confirmation-'));
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
   return { ...env(), GITHUB_OUTPUT: path.join(dir, 'output'), AUTO_MERGE_RESULT: 'success',
     CONFIRMED_HEAD: confirmation.confirmed_head, CONFIRMED_BASE: confirmation.confirmed_base, CONFIRMED_MERGE: confirmation.confirmed_merge,
     CONFIRMED_RUN: confirmation.confirmed_run, CONFIRMED_APP: confirmation.confirmed_app };
 }
-
-test('request and read-back confirmation precede both successful required checks', async t => {
-  const mock = orderAPI();
-  const confirmation = await c.requestAutoMerge(env(), mock.api);
-  assert.ok(Object.values(mock.checks).every(x => x.status === 'in_progress'));
-  assert.deepEqual(confirmation, { confirmed_head: head, confirmed_base: base, confirmed_merge: merge, confirmed_run: `123:1:${head}:${merge}:${base}`, confirmed_app: 'dextech-merge' });
-  await c.publish(publicationEnv(t, confirmation), mock.api);
-  assert.ok(Object.values(mock.checks).every(x => x.status === 'completed' && x.conclusion === 'success'));
-  const enableIndex = mock.calls.findIndex(x => x.body?.query?.startsWith('mutation'));
-  const firstSuccess = mock.calls.findIndex(x => x.body?.conclusion === 'success');
-  assert.ok(enableIndex >= 0 && firstSuccess > enableIndex);
-  assert.ok(mock.calls.slice(enableIndex + 1, firstSuccess).some(x => x.endpoint.endsWith('/pulls/12')));
-});
-
-test('failed request, missing mutation confirmation or missing read-back never publish success', async t => {
-  for (const options of [{ rejectRequest: true }, { badMutation: true }, { unconfirmed: true }]) {
-    const mock = orderAPI(options);
-    await assert.rejects(c.requestAutoMerge(env(), mock.api));
-    assert.ok(Object.values(mock.checks).every(x => x.status === 'in_progress'));
-    await assert.rejects(c.publish({ ...publicationEnv(t), AUTO_MERGE_RESULT: 'failure' }, mock.api));
-    assert.ok(Object.values(mock.checks).every(x => x.conclusion === 'failure'));
-    assert.equal(mock.calls.some(x => x.body?.conclusion === 'success'), false);
-  }
-});
-
-test('publisher rejects absent, stale or unsuccessful confirmation even if native squash is enabled', async t => {
-  for (const override of [{ CONFIRMED_HEAD: base }, { CONFIRMED_BASE: head }, { CONFIRMED_MERGE: head },
-    { CONFIRMED_RUN: `123:0:${head}` }, { AUTO_MERGE_RESULT: 'cancelled' }, { AUTO_MERGE_RESULT: 'skipped' }]) {
-    const mock = orderAPI();
-    const confirmed = await c.requestAutoMerge(env(), mock.api);
-    await assert.rejects(c.publish({ ...publicationEnv(t, confirmed), ...override }, mock.api));
-    assert.equal(mock.calls.some(x => x.body?.conclusion === 'success'), false);
-  }
-});
 
 test('changed main, stale head, drafts, closed PRs and forks fail before mutation', async () => {
   const stale = pr(); stale.head.sha = base;
@@ -729,16 +611,8 @@ test('wrong method or head in GitHub mutation result fails confirmation', async 
       if (args[0] === '/graphql') return { data: { enablePullRequestAutoMerge: { pullRequest: enabled } } };
       return mock.api(...args);
     }));
-    assert.ok(Object.values(mock.checks).every(x => x.status === 'in_progress'));
+    assert.equal(mock.calls.some(c => ['POST', 'PATCH'].includes(c.method) && c.endpoint !== '/graphql'), false);
   }
-});
-
-test('drafts cannot publish passing legacy gates even with a clean review', async t => {
-  const current = pr(); current.draft = true;
-  const mock = orderAPI({ current });
-  await assert.rejects(c.publish({ ...publicationEnv(t), AUTO_MERGE_RESULT: 'success', REQUEST_RESULT: 'skipped', PR_DRAFT: 'true' }, mock.api));
-  assert.ok(Object.values(mock.checks).every(x => x.status === 'in_progress' && x.conclusion === null));
-  assert.equal(mock.calls.some(x => x.body?.query?.startsWith('mutation')), false);
 });
 
 test('API failure diagnostics contain only fixed categories, never untrusted bodies or exceptions', async () => {
@@ -769,7 +643,7 @@ test('API failure diagnostics contain only fixed categories, never untrusted bod
   assert.doesNotMatch(source, /console\.(log|error)\([^\n]*(?:\.message|\.body|REVIEW_JSON)/);
 });
 
-test('workflow orders disarming, evaluation, native request, then publication with separate permissions', () => {
+test('workflow orders disarming, evaluation, native request and finalization with separate permissions', () => {
   const workflow = fs.readFileSync(path.join(__dirname, '../.github/workflows/codex-review.yml'), 'utf8');
   const job = name => workflow.split(`\n  ${name}:\n`)[1].split(/\n  [a-z-]+:\n/)[0];
   assert.match(job('disarm'), /needs: snapshot/);
@@ -777,31 +651,11 @@ test('workflow orders disarming, evaluation, native request, then publication wi
   assert.match(job('auto-merge'), /needs: \[snapshot, disarm, eligibility, review\]/);
   assert.match(job('auto-merge'), /contents: read\n      pull-requests: read\n      checks: read/);
   assert.doesNotMatch(job('auto-merge'), /checks: write|needs\.publish|OPENAI_API_KEY/);
-  assert.match(job('publish'), /needs: \[snapshot, eligibility, review, disarm, auto-merge\]/);
-  assert.match(job('publish'), /contents: read\n      checks: write/);
-  assert.doesNotMatch(job('publish'), /pull-requests: write|contents: write/);
-  for (const field of ['confirmed_head', 'confirmed_base', 'confirmed_merge', 'confirmed_run', 'confirmed_app']) {
-    assert.ok(job('publish').includes(`needs.auto-merge.outputs.${field}`));
-  }
+  assert.doesNotMatch(workflow, /\n  publish:|checks: write/);
+  assert.match(job('feedback'), /needs: \[snapshot, review, auto-merge\]/);
   const source = fs.readFileSync(path.join(__dirname, '../.github/codex/control.cjs'), 'utf8');
   assert.doesNotMatch(source, /\bmergePullRequest\b|\/pulls\/[^\n]*\/merge|--admin/);
   assert.equal(p.classify(['.github/workflows/codex-review.yml', '.github/codex/control.cjs']).eligible, false);
-});
-
-test('source-head checks retain the independent synthetic merge binding', async t => {
-  const mock = orderAPI();
-  assert.notEqual(head, merge);
-  const confirmation = await c.requestAutoMerge(env(), mock.api);
-  const mutation = mock.calls.find(x => x.body?.query?.startsWith('mutation'));
-  assert.equal(mutation.body.variables.head, head);
-  assert.notEqual(mutation.body.variables.head, merge);
-  assert.equal(confirmation.confirmed_merge, merge);
-  await c.publish(publicationEnv(t, confirmation), mock.api);
-  for (const value of Object.values(mock.checks)) {
-    assert.equal(value.head_sha, head);
-    assert.equal(value.external_id, `dextech:12:123:1:${head}:${base}`);
-    assert.match(value.output.summary, new RegExp(`Reviewed head: ${head}. Merge candidate: ${merge}`));
-  }
 });
 
 test('a changed merge ref, unknown mergeability, or mismatched parents stops auto-merge before mutation', async () => {
@@ -824,22 +678,23 @@ test('a changed merge ref, unknown mergeability, or mismatched parents stops aut
   }
 });
 
-test('missing merge SHA and stale ownership cannot authorize a request', async () => {
+test('missing merge SHA and stale native-check identity cannot authorize a request', async () => {
   for (const value of [undefined, '', 'invalid', merge.toUpperCase()]) {
     const mock = orderAPI();
     await assert.rejects(c.requestAutoMerge({ ...env(), MERGE_SHA: value }, mock.api));
     assert.equal(mock.calls.length, 0);
   }
-  for (const transform of [x => ({ ...x, head_sha: merge }),
-    x => ({ ...x, external_id: `123:1:${head}` }),
-    x => ({ ...x, external_id: `123:1:${head}:${head}:${base}` })]) {
-    const mock = mockAPI(pr(), transform);
-    await assert.rejects(c.requestAutoMerge(env(), mock.api));
+  for (const change of [{ head_sha: merge }, { check_suite: { id: 1 } }, { app: { id: 1, slug: 'other' } }]) {
+    const mock = mockAPI();
+    await assert.rejects(c.requestAutoMerge(env(), async (url, ...args) => {
+      const value = await mock.api(url, ...args);
+      return url.endsWith('/check-runs/103') ? { ...value, ...change } : value;
+    }));
     assert.equal(mock.calls.some(x => x.body?.query?.startsWith('mutation')), false);
   }
 });
 
-test('merge-candidate change during request confirmation leaves both checks pending', async () => {
+test('merge-candidate change during request confirmation fails without writing checks', async () => {
   const mock = orderAPI();
   let requested = false;
   await assert.rejects(c.requestAutoMerge(env(), async (url, ...args) => {
@@ -848,33 +703,7 @@ test('merge-candidate change during request confirmation leaves both checks pend
     if (requested && url.includes('/git/ref/pull/')) result.object.sha = 'f'.repeat(40);
     return result;
   }));
-  assert.ok(Object.values(mock.checks).every(x => x.status === 'in_progress'));
-  assert.equal(mock.calls.some(x => x.method === 'PATCH'), false);
-});
-
-test('publication revalidates both SHAs before each check update', async t => {
-  for (const when of ['before-publication', 'between-writes']) {
-    const mock = orderAPI();
-    const confirmation = await c.requestAutoMerge(env(), mock.api);
-    let writes = 0;
-    await assert.rejects(c.publish(publicationEnv(t, confirmation), async (url, method, body) => {
-      const result = await mock.api(url, method, body);
-      if (method === 'PATCH') writes++;
-      if (url.includes('/git/ref/pull/') && (when === 'before-publication' || writes === 1)) {
-        result.object.sha = 'f'.repeat(40);
-      }
-      return result;
-    }));
-    assert.equal(writes, when === 'before-publication' ? 0 : 1);
-    assert.equal(mock.checks.eligible.status, 'in_progress');
-  }
-  const mock = orderAPI();
-  const confirmation = await c.requestAutoMerge(env(), mock.api);
-  await assert.rejects(c.publish(publicationEnv(t, confirmation), async (url, ...args) => {
-    const result = await mock.api(url, ...args);
-    if (url.endsWith('/pulls/12')) result.head.sha = 'f'.repeat(40);
-    return result;
-  }));
+  assert.equal(mock.calls.some(c => ['POST', 'PATCH'].includes(c.method) && c.endpoint !== '/graphql'), false);
   assert.equal(mock.calls.some(x => x.method === 'PATCH'), false);
 });
 
@@ -906,14 +735,14 @@ test('workflow carries the merge SHA and confirmation without changing exact-hea
   const heads = [...workflow.matchAll(/HEAD_SHA: \$\{\{ needs.snapshot.outputs.head \}\}/g)];
   const merges = [...workflow.matchAll(/MERGE_SHA: \$\{\{ needs.snapshot.outputs.merge \}\}/g)];
   assert.equal(merges.length, heads.length);
-  assert.equal(merges.length, 6);
-  assert.match(workflow, /CONFIRMED_MERGE: \$\{\{ needs.auto-merge.outputs.confirmed_merge \}\}/);
-  assert.match(workflow, /confirmed_merge: \$\{\{ steps.request.outputs.confirmed_merge \}\}/);
+  assert.equal(merges.length, 5);
+  assert.match(workflow, /CONFIRMED_MERGE: \$\{\{ steps.request.outputs.confirmed_merge \}\}/);
+
   assert.doesNotMatch(workflow, /ref: \$\{\{ needs.snapshot.outputs.merge \}\}/);
   assert.equal(p.classify(['.github/codex/control.cjs', '.github/workflows/codex-review.yml']).eligible, false);
 });
 
-test('snapshot installs pending checks immediately and retries transient merge discovery', async t => {
+test('snapshot retries transient merge discovery without writing custom checks', async t => {
   for (const condition of ['unknown', 'missing-sha', 'ref-404', 'commit-404', 'final-read-unknown', 'exhausted',
     'stale-head', 'stale-base', 'conflict', 'permission', 'wrong-parents', 'malformed']) {
     await t.test(condition, async t => {
@@ -937,7 +766,7 @@ test('snapshot installs pending checks immediately and retries transient merge d
           if (delays.length === 0 || condition === 'exhausted') {
             if (['unknown', 'exhausted', 'stale-head', 'stale-base'].includes(condition)) result.mergeable = null;
             if (condition === 'missing-sha') result.merge_commit_sha = null;
-            if (condition === 'final-read-unknown' && reads === 5) result.mergeable = null;
+            if (condition === 'final-read-unknown' && reads === 3) result.mergeable = null;
             if (condition === 'conflict') result.mergeable = false;
             if (condition === 'malformed') result.merge_commit_sha = 'untrusted-invalid';
             if (condition === 'permission') status = 403;
@@ -952,11 +781,11 @@ test('snapshot installs pending checks immediately and retries transient merge d
           return result;
         } };
       });
-      const run = () => c.snapshot(values, api, async ms => { assert.equal(writes.length, 2); delays.push(ms); });
+      const run = () => c.snapshot(values, api, async ms => { assert.equal(writes.length, 0); delays.push(ms); });
       if (['unknown', 'missing-sha', 'ref-404', 'commit-404', 'final-read-unknown'].includes(condition)) {
         await run();
         assert.deepEqual(delays, [1000]);
-        assert.equal(writes.length, 2);
+        assert.equal(writes.length, 0);
         assert.ok(writes.every(check => check.head_sha === head && check.status === 'in_progress'));
         assert.match(fs.readFileSync(values.GITHUB_OUTPUT, 'utf8'), new RegExp(`head=${head}\\nbase=${base}\\nmerge=${merge}`));
       } else {
@@ -967,7 +796,7 @@ test('snapshot installs pending checks immediately and retries transient merge d
           assert.equal(c.diagnostic(error), `Review control failed closed: ${category}.`);
           return true;
         });
-        assert.equal(writes.length, condition === 'permission' ? 0 : 2);
+        assert.equal(writes.length, 0);
         assert.equal(fs.existsSync(values.GITHUB_OUTPUT), false);
         assert.deepEqual(delays, condition === 'exhausted' ? [1000, 2000, 4000, 8000, 15000, 30000] :
           condition.startsWith('stale-') ? [1000] : []);
@@ -1001,59 +830,6 @@ test('live readiness requires native CI on HEAD, valid review metadata, and merg
   }
 });
 
-test('cancelled, superseded and replaced-attempt runs cannot enable or publish authorization', async t => {
-  for (const scenario of ['cancelled', 'superseded', 'attempt', 'ownership']) {
-    const mock = orderAPI();
-    const api = async (url, method, body) => {
-      const result = await mock.api(url, method, body);
-      if (url.endsWith('/actions/runs/123') && scenario === 'cancelled') result.status = 'completed';
-      if (url.endsWith('/actions/runs/123') && scenario === 'attempt') result.run_attempt = 2;
-      if (url.includes('/actions/workflows/') && scenario === 'superseded') result.workflow_runs.push({ id: 124, display_title: 'Codex review PR #12' });
-      if (url.endsWith('/check-runs/101') && scenario === 'ownership') result.external_id = 'newer-run';
-      return result;
-    };
-    await assert.rejects(c.requestAutoMerge(env(), api));
-    await assert.rejects(c.publish(publicationEnv(t), api));
-    assert.equal(mock.calls.some(c => c.body?.query?.startsWith('mutation') || c.body?.conclusion === 'success'), false);
-  }
-});
-
-test('reruns reclaim pending checks and reopening revokes stale auto-merge requests', async t => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'dextech-rerun-'));
-  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
-  const values = { ...env(), GITHUB_EVENT_PATH: path.join(dir, 'event'), GITHUB_OUTPUT: path.join(dir, 'output'),
-    GITHUB_SHA: base, GITHUB_REPOSITORY: p.REPOSITORY, GITHUB_EVENT_NAME: 'pull_request_target' };
-  const checks = [], mutations = [];
-  let current = { ...pr(), auto_merge: { merge_method: 'squash', enabled_by: { login: 'dextech-merge[bot]' } } };
-  const api = async (url, method = 'GET', body) => {
-    if (body?.query?.startsWith('mutation')) {
-      mutations.push(body.query); current.auto_merge = null;
-      return { data: { disablePullRequestAutoMerge: { pullRequest: { id: current.node_id } } } };
-    }
-    if (url.includes('/check-runs?')) return { total_count: checks.length, check_runs: structuredClone(checks) };
-    if (method === 'POST') {
-      assert.equal(current.auto_merge, null);
-      const check = { ...body, id: 101 + checks.length, app: { slug: 'github-actions' }, conclusion: null };
-      checks.push(check); return check;
-    }
-    if (method === 'PATCH') {
-      const check = checks.find(c => url.endsWith(`/${c.id}`));
-      Object.assign(check, body, { conclusion: null }); return check;
-    }
-    return mergeResponse(url) || structuredClone(current);
-  };
-  for (const action of ['opened', 'synchronize', 'reopened']) {
-    if (action === 'reopened') current.auto_merge = { merge_method: 'squash' };
-    fs.writeFileSync(values.GITHUB_EVENT_PATH, JSON.stringify({ action, pull_request: current }));
-    await c.snapshot(values, api, async () => assert.fail('unexpected retry'));
-    assert.equal(checks.length, 2);
-    assert.ok(checks.every(c => c.head_sha === head && c.status === 'in_progress'));
-  }
-  assert.equal(mutations.length, 2);
-  assert.ok(mutations.every(query => /disablePullRequestAutoMerge/.test(query)));
-  assert.doesNotMatch(fs.readFileSync(values.GITHUB_OUTPUT, 'utf8'), /active=false/);
-});
-
 test('workflow avoids recursive and irrelevant events and admits only base-controlled PR events', () => {
   const workflow = fs.readFileSync(path.join(__dirname, '../.github/workflows/codex-review.yml'), 'utf8');
   assert.doesNotMatch(workflow, /\bcheck_run:|\bcheck_suite:|\bstatus:/);
@@ -1064,43 +840,6 @@ test('workflow avoids recursive and irrelevant events and admits only base-contr
   assert.doesNotMatch(workflow, /workflow_dispatch:/);
   assert.match(workflow, /ref: \$\{\{ needs.snapshot.outputs.base \}\}/);
   assert.doesNotMatch(workflow, /ref: \$\{\{ inputs\./);
-});
-
-test('completed checks are superseded and a non-pending GitHub response stops snapshot', async t => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'dextech-completed-'));
-  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
-  const values = { ...env(), GITHUB_EVENT_PATH: path.join(dir, 'event'), GITHUB_OUTPUT: path.join(dir, 'output'),
-    GITHUB_SHA: base, GITHUB_REPOSITORY: p.REPOSITORY, GITHUB_EVENT_NAME: 'pull_request_target' };
-  fs.writeFileSync(values.GITHUB_EVENT_PATH, JSON.stringify({ pull_request: pr() }));
-  for (const returnedState of ['in_progress', 'completed']) {
-    const writes = [], archived = [];
-    const created = {};
-    const api = async (url, method, body) => {
-      if (url.includes('/check-runs?')) return { total_count: 2, check_runs: ['gate', 'eligible'].map((kind, i) =>
-        ({ ...check(kind), id: 11 + i, status: 'completed', conclusion: 'failure' })) };
-      if (method === 'POST') {
-        writes.push(body);
-        const id = 101 + writes.length;
-        return created[id] = { ...body, id, status: returnedState,
-          conclusion: returnedState === 'in_progress' ? null : 'failure' };
-      }
-      if (method === 'PATCH') {
-        assert.deepEqual(Object.keys(body), ['name'], 'preserve historical conclusions');
-        assert.ok(writes.length > archived.length, 'replacement is pending before old name changes');
-        const id = Number(url.split('/').pop());
-        archived.push(body);
-        return { ...body, id, head_sha: head, conclusion: 'failure' };
-      }
-      if (created[url.split('/').pop()]) return created[url.split('/').pop()];
-      return mergeResponse(url) || pr();
-    };
-    if (returnedState === 'in_progress') {
-      await c.snapshot(values, api);
-      assert.equal(writes.length, 2);
-      assert.equal(archived.length, 2);
-      assert.ok(archived.every(c => /superseded/.test(c.name)));
-    } else await assert.rejects(c.snapshot(values, api), error => c.diagnostic(error).includes('required-checks-not-pending'));
-  }
 });
 
 test('feedback is a safe no-op when auto-merge closes the PR before or during comment lookup', async () => {
@@ -1121,7 +860,7 @@ test('feedback is a safe no-op when auto-merge closes the PR before or during co
 
 test('run-ownership API consumers declare Actions read; reviewer cannot write or override base control', () => {
   const workflow = fs.readFileSync(path.join(__dirname, '../.github/workflows/codex-review.yml'), 'utf8');
-  for (const name of ['snapshot', 'publish', 'auto-merge']) {
+  for (const name of ['snapshot', 'auto-merge']) {
     const job = workflow.split(`\n  ${name}:`)[1].split(/\n  [a-z][a-z-]*:/)[0];
     assert.match(job, /permissions:\n      actions: read/);
     assert.doesNotMatch(job, /actions: write/);
@@ -1155,74 +894,6 @@ test('control review includes policy/schema dependencies as data and retains com
   assert.ok(packet.context.some(c => c.file === '.github/codex/review.schema.json'));
   assert.doesNotMatch(instructions, /UNTRUSTED_POLICY_TEXT/);
   assert.doesNotMatch(prompt, /UNRELATED_APPLICATION_TEXT/);
-});
-
-test('native auto-merge waits for enforced reviews and conversations without another workflow event', async t => {
-  for (const decision of ['REVIEW_REQUIRED', 'CHANGES_REQUESTED']) {
-    const mock = orderAPI();
-    const state = readiness().data.repository.pullRequest;
-    state.reviewDecision = decision;
-    state.reviewThreads.nodes = [{ isResolved: false }];
-    const api = async (url, method, body) => body?.query?.startsWith('query') ?
-      { data: { repository: { autoMergeAllowed: true, squashMergeAllowed: true, pullRequest: state } } } :
-      mock.api(url, method, body);
-    const confirmation = await c.requestAutoMerge(env(), api);
-    assert.ok(Object.values(mock.checks).every(c => c.status === 'in_progress'));
-    await c.publish(publicationEnv(t, confirmation), api);
-    assert.ok(Object.values(mock.checks).every(c => c.conclusion === 'success'));
-    // Only native enable was requested. GitHub retains the review/thread hold;
-    // controller code cannot clear it or issue an immediate merge.
-    const writes = mock.calls.filter(c => c.body?.query?.startsWith('mutation'));
-    assert.equal(writes.length, 1);
-    assert.match(writes[0].body.query, /enablePullRequestAutoMerge/);
-    assert.doesNotMatch(JSON.stringify(mock.calls), /mergePullRequest\(|resolveReviewThread|dismissPullRequestReview|addPullRequestReview/);
-    assert.equal(state.reviewDecision, decision);
-    assert.equal(state.reviewThreads.nodes[0].isResolved, false);
-  }
-});
-
-
-test('pending native CI uses GitHub auto-merge without a local completion deadline', async t => {
-  for (const status of ['QUEUED', 'IN_PROGRESS', 'WAITING', 'PENDING', 'REQUESTED']) {
-    const mock = orderAPI();
-    const response = readiness();
-    const native = response.data.repository.pullRequest.commits.nodes[0].commit.statusCheckRollup.contexts.nodes[0];
-    Object.assign(native, { status, conclusion: null, startedAt: '2000-01-01T00:00:00Z' });
-    const api = async (url, method, body) => body?.query?.startsWith('query') ? response : mock.api(url, method, body);
-    const confirmation = await c.requestAutoMerge(env(), api);
-    assert.ok(Object.values(mock.checks).every(check => check.status === 'in_progress'));
-    await c.publish(publicationEnv(t, confirmation), api);
-    assert.ok(Object.values(mock.checks).every(check => check.conclusion === 'success'));
-    assert.equal(native.status, status); // Only GitHub can complete native CI.
-    assert.equal(native.conclusion, null);
-    assert.equal(mock.calls.filter(call => call.body?.query?.includes('enablePullRequestAutoMerge')).length, 1);
-    assert.ok(mock.calls.filter(call => call.method === 'PATCH').every(call => /check-runs\/10[12]$/.test(call.endpoint)));
-  }
-  const workflow = fs.readFileSync(path.join(__dirname, '../.github/workflows/codex-review.yml'), 'utf8');
-  const control = fs.readFileSync(path.join(__dirname, '../.github/codex/control.cjs'), 'utf8');
-  assert.doesNotMatch(workflow, /control\.cjs wait/);
-  assert.doesNotMatch(control, /waitForRequirements/);
-});
-
-test('terminal or malformed CI cannot enable auto-merge, including a failure before publication', async t => {
-  const states = ['FAILURE', 'CANCELLED', 'TIMED_OUT', 'ACTION_REQUIRED', 'STARTUP_FAILURE', 'STALE', 'SKIPPED', 'NEUTRAL', null];
-  for (const conclusion of states) {
-    const mock = orderAPI();
-    const response = readiness();
-    response.data.repository.pullRequest.commits.nodes[0].commit.statusCheckRollup.contexts.nodes[0].conclusion = conclusion;
-    const api = async (url, method, body) => body?.query?.startsWith('query') ? response : mock.api(url, method, body);
-    await assert.rejects(c.requestAutoMerge(env(), api));
-    assert.equal(mock.calls.some(call => call.body?.query?.startsWith('mutation')), false);
-  }
-  const mock = orderAPI();
-  const response = readiness();
-  const native = response.data.repository.pullRequest.commits.nodes[0].commit.statusCheckRollup.contexts.nodes[0];
-  Object.assign(native, { status: 'IN_PROGRESS', conclusion: null });
-  const api = async (url, method, body) => body?.query?.startsWith('query') ? response : mock.api(url, method, body);
-  const confirmation = await c.requestAutoMerge(env(), api);
-  Object.assign(native, { status: 'COMPLETED', conclusion: 'FAILURE' });
-  await assert.rejects(c.publish(publicationEnv(t, confirmation), api));
-  assert.ok(Object.values(mock.checks).every(check => check.status === 'in_progress'));
 });
 
 test('base retargets run both workflows; irrelevant edits cannot cancel or supersede them', async () => {
@@ -1282,7 +953,7 @@ test('snapshot ignores title/body edits before API access but retargets create p
     }
     return mergeResponse(url) || pr();
   }, async () => assert.fail('unexpected metadata retry'));
-  assert.equal(writes.length, 2);
+  assert.equal(writes.length, 0);
   assert.ok(writes.every(check => check.head_sha === head && check.status === 'in_progress'));
 });
 
@@ -1349,7 +1020,7 @@ test('App identity must also match on independent post-mutation confirmation', a
     if (mutated && url.endsWith('/pulls/12')) result.auto_merge.enabled_by.login = 'github-actions[bot]';
     return result;
   }), error => c.diagnostic(error).includes('merge-app-configuration'));
-  assert.ok(Object.values(mock.checks).every(check => check.status === 'in_progress'));
+  assert.equal(mock.calls.some(c => ['POST', 'PATCH'].includes(c.method) && c.endpoint !== '/graphql'), false);
 });
 
 test('only the separate trusted final job receives the scoped, revocable App token', () => {
@@ -1368,36 +1039,6 @@ test('only the separate trusted final job receives the scoped, revocable App tok
   assert.match(job, /ref: \$\{\{ github.sha \}\}/);
   assert.match(job, /permissions:\n      actions: read\n      contents: read\n      pull-requests: read\n      checks: read/);
 });
-
-
-test('publisher rejects replacement native requests before and between successful check writes', async t => {
-  for (const replaceAt of [0, 1]) {
-    const mock = orderAPI();
-    const confirmation = await c.requestAutoMerge(env(), mock.api);
-    let writes = 0;
-    const api = async (url, method, body) => {
-      const result = await mock.api(url, method, body);
-      if (method === 'PATCH' && body?.conclusion === 'success') writes++;
-      if (url.endsWith('/pulls/12') && writes >= replaceAt) {
-        result.auto_merge.enabled_by.login = 'github-actions[bot]';
-      }
-      return result;
-    };
-    await assert.rejects(c.publish(publicationEnv(t, confirmation), api));
-    assert.equal(writes, replaceAt);
-    assert.equal(Object.values(mock.checks).every(check => check.conclusion === 'success'), false);
-  }
-});
-
-test('publisher requires the App identity in the trusted request receipt', async t => {
-  for (const identity of [undefined, '', 'github-actions', 'invalid[bot]']) {
-    const mock = orderAPI();
-    const confirmation = await c.requestAutoMerge(env(), mock.api);
-    await assert.rejects(c.publish({ ...publicationEnv(t, confirmation), CONFIRMED_APP: identity }, mock.api));
-    assert.equal(mock.calls.some(call => call.body?.conclusion === 'success'), false);
-  }
-});
-
 
 test('revocation requires independent absence and the same head/base after mutation', async () => {
   for (const variant of ['surviving-request', 'missing-field', 'changed-head', 'changed-base', 'changed-id']) {
@@ -1430,7 +1071,7 @@ function nativeAPI({ current = pr(), legacy = false } = {}) {
     if (body?.query?.startsWith('query')) {
       const response = await mock.api(url, method, body);
       const contexts = response.data.repository.pullRequest.commits.nodes[0].commit.statusCheckRollup.contexts;
-      contexts.nodes = contexts.nodes.filter(c => legacy || !Object.values(p.CHECKS).includes(c.name));
+      contexts.nodes = contexts.nodes.filter(c => legacy || !Object.values(retiredChecks).includes(c.name));
       contexts.nodes.find(c => c.name === p.NATIVE_GATE).isRequired = true;
       return response;
     }
@@ -1438,7 +1079,7 @@ function nativeAPI({ current = pr(), legacy = false } = {}) {
   };
   return { ...mock, api };
 }
-const nativeEnv = () => ({ ...env(), LEGACY_CHECKS: 'false' });
+const nativeEnv = env;
 
 test('native gate rejects failed, cancelled, skipped or missing prerequisites before any API or token access', async () => {
   for (const key of ['SNAPSHOT_RESULT', 'DISARM_RESULT', 'ELIGIBILITY_RESULT', 'REVIEW_RESULT']) {
@@ -1457,7 +1098,7 @@ test('native-only gate confirms eligible auto-merge without creating, updating o
   const mock = nativeAPI();
   assert.deepEqual(await c.prepareNativeGate(nativeEnv(), mock.api), { request: true });
   const receipt = await c.requestAutoMerge(nativeEnv(), mock.api);
-  assert.deepEqual(await c.finishNativeGate({ ...publicationEnv(t, receipt), ...nativeEnv(),
+  assert.deepEqual(await c.finishNativeGate({ ...confirmationEnv(t, receipt), ...nativeEnv(),
     REQUEST_RESULT: 'success' }, mock.api), { passed: true });
   assert.equal(mock.calls.filter(c => c.body?.query?.startsWith('mutation')).length, 1);
   assert.equal(mock.calls.some(c => /check-runs\/10[12]$/.test(c.endpoint)), false);
@@ -1479,7 +1120,7 @@ test('native gate passes clean protected changes without requesting auto-merge',
 test('native finalization rejects missing confirmation, failed CI, changed candidates and cancelled runs', async t => {
   const mock = nativeAPI();
   const receipt = await c.requestAutoMerge(nativeEnv(), mock.api);
-  const values = { ...publicationEnv(t, receipt), ...nativeEnv(), REQUEST_RESULT: 'success' };
+  const values = { ...confirmationEnv(t, receipt), ...nativeEnv(), REQUEST_RESULT: 'success' };
   for (const override of [{ REQUEST_RESULT: 'skipped' }, { REQUEST_RESULT: 'failure' },
     { CONFIRMED_HEAD: base }, { CONFIRMED_BASE: head }, { CONFIRMED_MERGE: head },
     { CONFIRMED_RUN: `123:0:${head}:${merge}:${base}` }, { CONFIRMED_APP: '' }]) {
@@ -1548,22 +1189,22 @@ test('rerun on the same SHA ignores older gate successes and binds the current n
   }));
 });
 
-test('ruleset migration accepts legacy, combined and native configurations but rejects incomplete protection', async () => {
+test('ruleset requires native checks and rejects retired or incomplete protection', async () => {
   for (const [native, legacy] of [[false, true], [true, true], [true, false]]) {
-    assert.deepEqual(await c.gateConfiguration(async () => configuredRules(native, legacy)), { native, legacy });
+    if (native && !legacy) await c.gateConfiguration(async () => configuredRules(native, legacy));
+    else await assert.rejects(c.gateConfiguration(async () => configuredRules(native, legacy)));
   }
   const invalid = [[], configuredRules(false, false),
     [{ type: 'required_status_checks', parameters: { strict_required_status_checks_policy: false,
       required_status_checks: configuredRules(true, false)[0].parameters.required_status_checks } }],
     [{ type: 'required_status_checks', parameters: { strict_required_status_checks_policy: true,
-      required_status_checks: [{ context: 'checks', integration_id: 15368 }, { context: p.CHECKS.gate, integration_id: 15368 }] } }]];
+      required_status_checks: [{ context: 'checks', integration_id: 15368 }, { context: retiredChecks.gate, integration_id: 15368 }] } }]];
   for (const rules of invalid) await assert.rejects(c.gateConfiguration(async () => rules));
   const wrongSource = configuredRules(true, false);
   wrongSource[0].parameters.required_status_checks[1].integration_id = 1;
   await assert.rejects(c.gateConfiguration(async () => wrongSource));
-  await assert.rejects(c.prepareNativeGate({ ...nativeEnv(), LEGACY_CHECKS: 'true' }, nativeAPI().api));
   const bridge = nativeAPI({ legacy: true });
-  assert.deepEqual(await c.prepareNativeGate(env(), bridge.api), { request: true });
+  await assert.rejects(c.prepareNativeGate(env(), bridge.api));
 });
 
 test('native-only snapshot stops creating and renaming legacy check runs', async t => {
@@ -1580,7 +1221,7 @@ test('native-only snapshot stops creating and renaming legacy check runs', async
     return mergeResponse(url) || pr();
   });
   const output = fs.readFileSync(values.GITHUB_OUTPUT, 'utf8');
-  assert.match(output, /legacy=false/);
+  assert.doesNotMatch(output, /legacy=/);
   assert.doesNotMatch(output, /gate_id|eligible_id/);
 });
 
@@ -1596,7 +1237,7 @@ test('native gate runs after upstream failure, reserves its name, and mints cred
   assert.ok(job.indexOf('control.cjs request') < job.indexOf('control.cjs gate-finish'));
   assert.match(job, /REQUEST_RESULT: \$\{\{ steps.request.outcome \}\}/);
   assert.doesNotMatch(job.split('Finish the native gate')[1], /MERGE_APP_TOKEN|steps.merge-app.outputs.token/);
-  assert.match(workflow.split('\n  publish:\n')[1].split('\n  feedback:\n')[0], /outputs.legacy == 'true'/);
+  assert.doesNotMatch(workflow, /checks: write|LEGACY_CHECKS|\n  publish:/);
 });
 
 test('a second workflow attempt uses its own native check and confirmation on the same source SHA', async t => {
@@ -1619,30 +1260,12 @@ test('a second workflow attempt uses its own native check and confirmation on th
   assert.deepEqual(await c.prepareNativeGate(values, api), { request: true });
   const receipt = await c.requestAutoMerge(values, api);
   assert.equal(receipt.confirmed_run, `123:2:${head}:${merge}:${base}`);
-  assert.deepEqual(await c.finishNativeGate({ ...publicationEnv(t, receipt), ...values, REQUEST_RESULT: 'success' }, api), { passed: true });
+  assert.deepEqual(await c.finishNativeGate({ ...confirmationEnv(t, receipt), ...values, REQUEST_RESULT: 'success' }, api), { passed: true });
   assert.equal(mock.calls.some(c => c.endpoint.endsWith('/check-runs/103')), false);
 });
 
-test('compatibility publication accepts the completed native gate only after successful authorization', async t => {
-  const mock = nativeAPI({ legacy: true });
-  const receipt = await c.requestAutoMerge(env(), mock.api);
-  const api = async (url, ...args) => {
-    const value = await mock.api(url, ...args);
-    if (url.includes('/attempts/')) Object.assign(value.jobs[0], { status: 'completed', conclusion: 'success' });
-    if (url.endsWith('/check-runs/103')) Object.assign(value, { status: 'completed', conclusion: 'success' });
-    if (value.data?.repository?.pullRequest) {
-      Object.assign(value.data.repository.pullRequest.commits.nodes[0].commit.statusCheckRollup.contexts.nodes.find(c => c.name === p.NATIVE_GATE),
-        { status: 'COMPLETED', conclusion: 'SUCCESS' });
-    }
-    return value;
-  };
-  await c.publish({ ...publicationEnv(t, receipt), REQUEST_RESULT: 'success' }, api);
-  assert.ok(Object.values(mock.checks).every(c => c.conclusion === 'success'));
-  await assert.rejects(c.prepareNativeGate(env(), api));
-});
-
 function draftSnapshotFixture(t, { action = 'opened', current = { ...pr(), draft: true }, eventPR = current,
-  workflowSha = base, rejectRevocation = false, keepRequest = false, obsolete = false, legacy = true, priorChecks = [] } = {}) {
+  workflowSha = base, rejectRevocation = false, keepRequest = false, obsolete = false } = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'dextech-draft-review-'));
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
   const values = { ...env(), GITHUB_EVENT_PATH: path.join(dir, 'event.json'), GITHUB_OUTPUT: path.join(dir, 'output'),
@@ -1652,25 +1275,13 @@ function draftSnapshotFixture(t, { action = 'opened', current = { ...pr(), draft
   fs.writeFileSync(values.GITHUB_EVENT_PATH, JSON.stringify(event));
   current = structuredClone(current);
   const calls = [];
-  const checks = structuredClone(priorChecks);
   const api = async (url, method = 'GET', body) => {
     calls.push({ url, method, body });
     if (url.endsWith('/pulls/12')) return structuredClone(current);
     if (url.endsWith('/rules/branches/main')) return [{ type: 'required_status_checks', parameters: {
-      strict_required_status_checks_policy: true, required_status_checks: ['checks', ...(legacy ? Object.values(p.CHECKS) : [p.NATIVE_GATE])]
+      strict_required_status_checks_policy: true, required_status_checks: ['checks', p.NATIVE_GATE]
         .map(context => ({ context, integration_id: 15368 })) } }];
-    if (url.includes('/commits/')) return { check_runs: structuredClone(checks), total_count: checks.length };
-    if (url.endsWith('/check-runs') && method === 'POST') {
-      const check = { ...body, id: 100 + checks.length, conclusion: null, app: { slug: 'github-actions' } };
-      checks.push(check);
-      return structuredClone(check);
-    }
-    if (/\/check-runs\/\d+$/.test(url)) {
-      const check = checks.find(c => c.id === Number(url.split('/').at(-1)));
-      assert.ok(check);
-      if (method === 'PATCH') Object.assign(check, body);
-      return structuredClone(check);
-    }
+
     if (url === '/graphql') {
       assert.match(body.query, /disablePullRequestAutoMerge/);
       if (rejectRevocation) throw new Error('Synthetic rejected revocation');
@@ -1686,7 +1297,7 @@ function draftSnapshotFixture(t, { action = 'opened', current = { ...pr(), draft
     }
     assert.fail(`Draft cleanup must not access merge discovery, CI or classification: ${url}`);
   };
-  return { values, calls, api, current, checks, output: () => fs.existsSync(values.GITHUB_OUTPUT) ? fs.readFileSync(values.GITHUB_OUTPUT, 'utf8') : '' };
+  return { values, calls, api, current, output: () => fs.existsSync(values.GITHUB_OUTPUT) ? fs.readFileSync(values.GITHUB_OUTPUT, 'utf8') : '' };
 }
 
 test('draft open, update, reopen, retarget and conversion only disarm and defer review', async t => {
@@ -1698,9 +1309,9 @@ test('draft open, update, reopen, retarget and conversion only disarm and defer 
       await c.snapshot(fixture.values, fixture.api, () => assert.fail('Draft must not wait for merge discovery'));
       assert.equal(fixture.output(), 'active=false\ndraft=true\n');
       assert.equal(fixture.current.auto_merge, null);
-      assert.equal(fixture.calls.filter(c => c.method !== 'GET').length, armed ? 3 : 2);
+      assert.equal(fixture.calls.filter(c => c.method !== 'GET').length, armed ? 1 : 0);
       assert.equal(fixture.calls.some(c => /git\//.test(c.url)), false);
-      assert.ok(fixture.checks.every(c => c.status === 'in_progress' && c.conclusion === null));
+      assert.equal(fixture.calls.some(c => /check-runs/.test(c.url)), false);
       if (armed) {
         const mutation = fixture.calls.findIndex(c => c.url === '/graphql');
         assert.ok(fixture.calls[mutation + 1].url.endsWith('/pulls/12'), 'Revocation has an independent read-back');
@@ -1757,7 +1368,7 @@ test('a delayed draft event stays deferred, and a ready event encountering a liv
   }
 });
 
-test('ready-for-review on the same draft SHA starts a fresh bound evaluation with pending legacy checks', async t => {
+test('ready-for-review on the same draft SHA starts a fresh bound evaluation without custom checks', async t => {
   const fixture = draftSnapshotFixture(t);
   await c.snapshot(fixture.values, fixture.api);
   fs.writeFileSync(fixture.values.GITHUB_EVENT_PATH, JSON.stringify({ action: 'ready_for_review', pull_request: pr() }));
@@ -1771,24 +1382,11 @@ test('ready-for-review on the same draft SHA starts a fresh bound evaluation wit
     }
     return mergeResponse(url) || pr();
   });
-  assert.match(fixture.output(), /active=true\ndraft=false\nlegacy=true/);
+  assert.match(fixture.output(), /active=true\ndraft=false/);
   assert.match(fixture.output(), new RegExp(`head=${head}`));
   assert.match(fixture.output(), new RegExp(`merge=${merge}`));
-  assert.deepEqual(writes.map(c => c.name), Object.values(p.CHECKS));
+  assert.deepEqual(writes, []);
   assert.ok(writes.every(c => c.status === 'in_progress' && !c.conclusion && c.head_sha === head));
-});
-
-test('neither native nor legacy gates accept draft state or skipped review as a passing result', async t => {
-  for (const overrides of [{ PR_DRAFT: 'true' }, { SNAPSHOT_ACTIVE: 'false' }, { REVIEW_RESULT: 'skipped' }]) {
-    await assert.rejects(c.prepareNativeGate({ ...nativeEnv(), ...overrides }, () => assert.fail('Rejected before API/token access')));
-  }
-  const current = { ...pr(), draft: true };
-  const mock = nativeAPI({ current });
-  await assert.rejects(c.prepareNativeGate(nativeEnv(), mock.api));
-  await assert.rejects(c.finishNativeGate({ ...nativeEnv(), REQUEST_RESULT: 'skipped' }, mock.api));
-  const legacy = orderAPI({ current });
-  await assert.rejects(c.publish({ ...publicationEnv(t), ELIGIBLE: 'false' }, legacy.api));
-  assert.equal(legacy.calls.some(c => c.body?.conclusion === 'success'), false);
 });
 
 test('workflow skips draft key-bearing work without emitting a skipped required merge-gate', () => {
@@ -1806,7 +1404,7 @@ test('workflow skips draft key-bearing work without emitting a skipped required 
   const github = { event: { action: 'ready_for_review', changes: {}, pull_request: { draft: false } } };
   assert.equal(runInNewContext(condition, { github, always: () => true }), true);
   assert.equal(runInNewContext(name, { github }), 'merge-gate');
-  for (const job of ['review', 'eligibility', 'disarm', 'publish', 'feedback']) {
+  for (const job of ['review', 'eligibility', 'disarm', 'feedback']) {
     const block = workflow.split(`\n  ${job}:\n`)[1].split(/\n  [a-z-]+:\n/)[0];
     assert.match(block, /needs\.snapshot\.outputs\.active == 'true'/);
   }
@@ -1814,24 +1412,8 @@ test('workflow skips draft key-bearing work without emitting a skipped required 
   assert.match(workflow, /cancel-in-progress: true/);
 });
 
-test('draft cleanup supersedes passing legacy results before readiness on the same SHA', async t => {
-  const priorChecks = Object.values(p.CHECKS).map((name, index) => ({ id: index + 1, name, head_sha: head,
-    app: { slug: 'github-actions' }, status: 'completed', conclusion: 'success' }));
-  const fixture = draftSnapshotFixture(t, { action: 'converted_to_draft', priorChecks });
-  await c.snapshot(fixture.values, fixture.api);
-  for (const name of Object.values(p.CHECKS)) {
-    const required = fixture.checks.filter(c => c.name === name);
-    assert.equal(required.length, 1);
-    assert.equal(required[0].status, 'in_progress');
-    assert.equal(required[0].conclusion, null);
-    assert.ok(fixture.checks.some(c => c.name.startsWith(`${name} (superseded `) && c.conclusion === 'success'));
-  }
-  assert.equal(fixture.calls.some(c => c.body?.conclusion), false);
-  assert.equal(fixture.output(), 'active=false\ndraft=true\n');
-});
-
 test('native-only draft cleanup does not create or rewrite custom checks', async t => {
-  const fixture = draftSnapshotFixture(t, { legacy: false });
+  const fixture = draftSnapshotFixture(t);
   await c.snapshot(fixture.values, fixture.api);
   assert.equal(fixture.calls.some(c => /check-runs/.test(c.url)), false);
   assert.equal(fixture.output(), 'active=false\ndraft=true\n');
@@ -1854,5 +1436,48 @@ test('closed-event no-op retains trusted repository and event-source validation'
     const fixture = draftSnapshotFixture(t, { action: 'closed' });
     await assert.rejects(c.snapshot({ ...fixture.values, ...overrides }, () => assert.fail('Unexpected API access')));
     assert.equal(fixture.output(), '');
+  }
+});
+
+test('reopening revokes stale authorization before merge discovery without writing checks', async t => {
+  const fixture = draftSnapshotFixture(t, { action: 'reopened',
+    current: { ...pr(), auto_merge: { merge_method: 'squash' } } });
+  const calls = [];
+  await c.snapshot(fixture.values, async (url, method = 'GET', body) => {
+    calls.push({ url, method });
+    if (url.includes('/git/')) {
+      if (!url.endsWith('/git/ref/heads/main')) assert.equal(fixture.current.auto_merge, null);
+      return mergeResponse(url);
+    }
+    assert.doesNotMatch(url, /check-runs/);
+    return fixture.api(url, method, body);
+  });
+  assert.match(fixture.output(), /active=true\ndraft=false/);
+  assert.equal(calls.filter(c => c.method !== 'GET').length, 1);
+});
+
+test('terminal CI results reject native authorization without publishing replacement checks', async () => {
+  for (const conclusion of ['FAILURE', 'CANCELLED', 'TIMED_OUT', 'SKIPPED', 'NEUTRAL', null]) {
+    const mock = nativeAPI();
+    await assert.rejects(c.prepareNativeGate(nativeEnv(), async (url, ...args) => {
+      const value = await mock.api(url, ...args);
+      if (value.data?.repository?.pullRequest) {
+        value.data.repository.pullRequest.commits.nodes[0].commit.statusCheckRollup.contexts.nodes[0].conclusion = conclusion;
+      }
+      return value;
+    }));
+    assert.equal(mock.calls.some(c => c.method !== 'GET' && c.endpoint !== '/graphql'), false);
+    assert.equal(mock.calls.some(c => c.body?.query?.startsWith('mutation')), false);
+  }
+});
+
+test('duplicate or wrong-source native requirements reject before authorization', async () => {
+  for (const context of ['checks', p.NATIVE_GATE]) {
+    const duplicate = configuredRules();
+    duplicate[0].parameters.required_status_checks.push({ context, integration_id: 15368 });
+    await assert.rejects(c.gateConfiguration(async () => duplicate));
+    const wrong = configuredRules();
+    wrong[0].parameters.required_status_checks.find(c => c.context === context).integration_id = 1;
+    await assert.rejects(c.gateConfiguration(async () => wrong));
   }
 });

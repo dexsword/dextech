@@ -31,7 +31,6 @@ jobs:
       actions: read
       contents: write
       pull-requests: write
-      checks: write
     outputs:
       active: ${{ steps.snapshot.outputs.active }}
       draft: ${{ steps.snapshot.outputs.draft }}
@@ -39,9 +38,6 @@ jobs:
       merge: ${{ steps.snapshot.outputs.merge }}
       base: ${{ steps.snapshot.outputs.base }}
       number: ${{ steps.snapshot.outputs.number }}
-      gate_id: ${{ steps.snapshot.outputs.gate_id }}
-      eligible_id: ${{ steps.snapshot.outputs.eligible_id }}
-      legacy: ${{ steps.snapshot.outputs.legacy }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
@@ -49,7 +45,7 @@ jobs:
           persist-credentials: false
           path: control
       - id: snapshot
-        name: Disarm and bind pending source-head checks to this trusted run
+        name: Disarm and capture the current source and merge candidate
         env:
           GH_TOKEN: ${{ github.token }}
         run: node control/.github/codex/control.cjs snapshot
@@ -155,54 +151,9 @@ jobs:
           PR_NUMBER: ${{ needs.snapshot.outputs.number }}
         run: node control/.github/codex/control.cjs disarm
 
-  publish:
-    # Migration only: automatically stops once the legacy requirements are removed.
-    if: ${{ always() && needs.snapshot.result == 'success' && needs.snapshot.outputs.active == 'true' && needs.snapshot.outputs.legacy == 'true' }}
-    needs: [snapshot, eligibility, review, disarm, auto-merge]
-    runs-on: ubuntu-24.04
-    timeout-minutes: 5
-    permissions:
-      actions: read
-      contents: read
-      checks: write
-    outputs:
-      passed: ${{ steps.publish.outputs.passed }}
-      eligible: ${{ steps.publish.outputs.eligible }}
-    steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-        with:
-          ref: ${{ needs.snapshot.outputs.base }}
-          persist-credentials: false
-          path: control
-      - id: publish
-        name: Validate schema and publish source-head checks
-        env:
-          GH_TOKEN: ${{ github.token }}
-          HEAD_SHA: ${{ needs.snapshot.outputs.head }}
-          MERGE_SHA: ${{ needs.snapshot.outputs.merge }}
-          BASE_SHA: ${{ needs.snapshot.outputs.base }}
-          PR_NUMBER: ${{ needs.snapshot.outputs.number }}
-          GATE_ID: ${{ needs.snapshot.outputs.gate_id }}
-          ELIGIBLE_ID: ${{ needs.snapshot.outputs.eligible_id }}
-          REVIEW_JSON: ${{ needs.review.outputs.result }}
-          REVIEW_RESULT: ${{ needs.review.result }}
-          DISARM_RESULT: ${{ needs.disarm.result }}
-          ELIGIBILITY_RESULT: ${{ needs.eligibility.result }}
-          ELIGIBLE: ${{ needs.eligibility.outputs.eligible }}
-          PR_DRAFT: ${{ needs.snapshot.outputs.draft }}
-          AUTO_MERGE_RESULT: ${{ needs.auto-merge.result }}
-          REQUEST_RESULT: ${{ needs.auto-merge.outputs.request_result }}
-          LEGACY_CHECKS: ${{ needs.snapshot.outputs.legacy }}
-          CONFIRMED_HEAD: ${{ needs.auto-merge.outputs.confirmed_head }}
-          CONFIRMED_MERGE: ${{ needs.auto-merge.outputs.confirmed_merge }}
-          CONFIRMED_BASE: ${{ needs.auto-merge.outputs.confirmed_base }}
-          CONFIRMED_RUN: ${{ needs.auto-merge.outputs.confirmed_run }}
-          CONFIRMED_APP: ${{ needs.auto-merge.outputs.confirmed_app }}
-        run: node control/.github/codex/control.cjs publish
-
   feedback:
     if: ${{ always() && needs.snapshot.result == 'success' && needs.snapshot.outputs.active == 'true' && needs.review.result == 'success' }}
-    needs: [snapshot, review, publish]
+    needs: [snapshot, review, auto-merge]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:
@@ -240,13 +191,6 @@ jobs:
       contents: read
       pull-requests: read
       checks: read
-    outputs:
-      confirmed_head: ${{ steps.request.outputs.confirmed_head }}
-      confirmed_merge: ${{ steps.request.outputs.confirmed_merge }}
-      confirmed_base: ${{ steps.request.outputs.confirmed_base }}
-      confirmed_run: ${{ steps.request.outputs.confirmed_run }}
-      confirmed_app: ${{ steps.request.outputs.confirmed_app }}
-      request_result: ${{ steps.request.outcome }}
     env:
       GH_TOKEN: ${{ github.token }}
       HEAD_SHA: ${{ needs.snapshot.outputs.head }}
@@ -261,7 +205,6 @@ jobs:
       ELIGIBLE: ${{ needs.eligibility.outputs.eligible }}
       REVIEW_RESULT: ${{ needs.review.result }}
       REVIEW_JSON: ${{ needs.review.outputs.result }}
-      LEGACY_CHECKS: ${{ needs.snapshot.outputs.legacy }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
@@ -291,8 +234,6 @@ jobs:
         env:
           MERGE_APP_TOKEN: ${{ steps.merge-app.outputs.token }}
           MERGE_APP_SLUG: ${{ steps.merge-app.outputs.app-slug }}
-          GATE_ID: ${{ needs.snapshot.outputs.gate_id }}
-          ELIGIBLE_ID: ${{ needs.snapshot.outputs.eligible_id }}
         run: node control/.github/codex/control.cjs request
       - name: Finish the native gate after independent confirmation
         env:
