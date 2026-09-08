@@ -65,6 +65,28 @@ test('homepage booking anchors and cancel route stay wired in index.html', () =>
   }
 });
 
+test('static pages declare matching HTTPS canonical URLs in head', () => {
+  const root = path.resolve(__dirname, '..');
+  const pages = [
+    { file: 'index.html', href: 'https://dextech.cloud' },
+    { file: 'support.html', href: 'https://dextech.cloud/support.html' },
+    { file: 'privacy.html', href: 'https://dextech.cloud/privacy.html' },
+    { file: 'terms.html', href: 'https://dextech.cloud/terms.html' },
+  ];
+
+  for (const page of pages) {
+    const html = fs.readFileSync(path.join(root, page.file), 'utf8');
+    const dom = new JSDOM(html, { url: 'https://dextech.invalid/' });
+    try {
+      const canonicals = Array.from(dom.window.document.head.querySelectorAll('link[rel="canonical"]'));
+      assert.equal(canonicals.length, 1, `${page.file} must have exactly one canonical link in head`);
+      assert.equal(canonicals[0].getAttribute('href'), page.href);
+    } finally {
+      dom.window.close();
+    }
+  }
+});
+
 test('support.html footer includes privacy, terms, and Express cancel route', () => {
   const root = path.resolve(__dirname, '..');
   const dom = new JSDOM(fs.readFileSync(path.join(root, 'support.html'), 'utf8'), {
