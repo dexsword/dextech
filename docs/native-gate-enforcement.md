@@ -27,8 +27,8 @@ node scripts/collect-native-gate-evidence.cjs PR_NUMBER RUN_ID output.json
 ```
 
 Use a new output file for every observation. The command reports observations,
-not a pass verdict; account for other merge blockers and any truncated review
-thread connection before interpreting the result. Captures are multiple API
+not a pass verdict; account for other merge blockers before interpreting the
+result. Truncated check or review-thread connections reject the capture. Captures are multiple API
 reads, not an atomic snapshot, so repeat a capture when the run changes state.
 
 ## Evidence required

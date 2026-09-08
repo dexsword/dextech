@@ -15,15 +15,12 @@ function api(endpoint, payload) {
     maxBuffer: 4000000
   }));
 }
-function read(endpoint) { return api(`repos/${repository}/${endpoint}`); }
 function pick(object, keys) { return Object.fromEntries(keys.map(key => [key, object[key]])); }
-function main() {
-  const [number, runId, output] = process.argv.slice(2);
-  assert.equal(process.argv.length, 5);
+function collect(number, runId, request = api) {
   assert.match(number, /^[1-9][0-9]*$/);
   assert.match(runId, /^[1-9][0-9]*$/);
   assert.ok(Number.isSafeInteger(Number(number)) && Number.isSafeInteger(Number(runId)));
-  assert.ok(output);
+  const read = endpoint => request(`repos/${repository}/${endpoint}`);
   const run = read(`actions/runs/${runId}`);
   const jobs = read(`actions/runs/${runId}/attempts/${run.run_attempt}/jobs?per_page=100`);
   assert.equal(jobs.total_count, jobs.jobs.length);
@@ -31,19 +28,20 @@ function main() {
   const gates = jobs.jobs.filter(job => job.name === 'merge-gate');
   assert.ok(gates.length <= 1);
   const gate = gates.length ? read(`check-runs/${gates[0].id}`) : null;
-  const result = api('graphql', { variables: { number: Number(number) }, query: `
+  const fields = `pageInfo { hasNextPage } nodes { __typename
+    ... on CheckRun { databaseId name status conclusion isRequired(pullRequestNumber:$number)
+      checkSuite { databaseId app { databaseId slug } } }
+    ... on StatusContext { context state isRequired(pullRequestNumber:$number) }
+  }`;
+  const result = request('graphql', { variables: { number: Number(number) }, query: `
     query($number:Int!) { repository(owner:"dexsword",name:"dextech") {
       pullRequest(number:$number) {
         state isDraft mergeable mergeStateStatus headRefOid baseRefOid reviewDecision
         autoMergeRequest { enabledAt }
         reviewThreads(first:100) { pageInfo { hasNextPage } nodes { isResolved } }
-        potentialMergeCommit { oid statusCheckRollup { contexts(first:1) { nodes { __typename } } } }
+        potentialMergeCommit { oid statusCheckRollup { contexts(first:100) { ${fields} } } }
         commits(last:1) { nodes { commit { oid statusCheckRollup { contexts(first:100) {
-          pageInfo { hasNextPage } nodes { __typename
-            ... on CheckRun { databaseId name status conclusion isRequired(pullRequestNumber:$number)
-              checkSuite { databaseId app { databaseId slug } } }
-            ... on StatusContext { context state isRequired(pullRequestNumber:$number) }
-          }
+          ${fields}
         } } } } }
       }
     } }` });
@@ -51,26 +49,42 @@ function main() {
   const pr = result.data.repository.pullRequest;
   const contexts = pr.commits.nodes[0].commit.statusCheckRollup.contexts;
   assert.equal(contexts.pageInfo.hasNextPage, false);
+  assert.ok(Array.isArray(contexts.nodes));
+  assert.equal(pr.reviewThreads.pageInfo.hasNextPage, false);
+  const mergeContexts = pr.potentialMergeCommit?.statusCheckRollup?.contexts;
+  if (mergeContexts) {
+    assert.equal(mergeContexts.pageInfo.hasNextPage, false);
+    assert.ok(Array.isArray(mergeContexts.nodes));
+  }
   const current = contexts.nodes.find(context => gate && context.databaseId === gate.id);
   const bound = Boolean(gate && current && run.path === '.github/workflows/codex-review.yml' &&
     run.event === 'pull_request_target' && gate.head_sha === pr.headRefOid && gate.head_sha === run.head_sha &&
     gate.check_suite.id === run.check_suite_id && gate.app.id === 15368 &&
     current.checkSuite.databaseId === run.check_suite_id && current.checkSuite.app.databaseId === 15368);
-  const evidence = {
+  return {
     captured_at: new Date().toISOString(), repository, pr_number: Number(number),
     run: pick(run, ['id', 'run_attempt', 'check_suite_id', 'head_sha', 'event', 'path', 'status', 'conclusion']),
     gate: gate && pick(gate, ['id', 'name', 'head_sha', 'status', 'conclusion']),
     pr, rules: read('rules/branches/main'),
     observations: { gate_bound_to_current_run_and_head: bound,
       current_gate_required: Boolean(current?.isRequired), merge_state: pr.mergeStateStatus,
-      no_auto_merge_request: pr.autoMergeRequest === null }
+      no_auto_merge_request: pr.autoMergeRequest === null,
+      synthetic_merge_has_checks: Boolean(mergeContexts?.nodes.length) }
   };
+}
+function main() {
+  const [number, runId, output] = process.argv.slice(2);
+  assert.equal(process.argv.length, 5);
+  assert.ok(output);
+  const evidence = collect(number, runId);
   // Refuse to overwrite an earlier capture. Snapshots contain only selected
   // metadata, not tokens, logs, PR bodies, comments, or model review contents.
   fs.writeFileSync(output, JSON.stringify(evidence, null, 2) + '\n', { flag: 'wx' });
   console.log(JSON.stringify(evidence.observations));
 }
-try { main(); } catch {
+if (require.main === module) try { main(); } catch {
   console.error('Native-gate evidence capture failed; response and exception details withheld.');
   process.exitCode = 1;
 }
+
+module.exports = { collect };
