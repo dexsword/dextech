@@ -1,0 +1,596 @@
+{
+  "repository": "dexsword/dextech",
+  "pr_number": 35,
+  "scope": "Live API observations under the staged four-check ruleset; no merge attempted. Pending observations have legacy-check confounders. Failed native gate is isolated. Existing administrator bypass was not exercised.",
+  "effective_rules": [
+    {
+      "type": "deletion",
+      "ruleset_source_type": "Repository",
+      "ruleset_source": "dexsword/dextech",
+      "ruleset_id": 22412408
+    },
+    {
+      "type": "non_fast_forward",
+      "ruleset_source_type": "Repository",
+      "ruleset_source": "dexsword/dextech",
+      "ruleset_id": 22412408
+    },
+    {
+      "type": "pull_request",
+      "parameters": {
+        "required_approving_review_count": 0,
+        "dismiss_stale_reviews_on_push": false,
+        "required_reviewers": [],
+        "require_code_owner_review": false,
+        "require_last_push_approval": false,
+        "required_review_thread_resolution": true,
+        "require_extra_approval_for_unattributed_changes": true,
+        "allowed_merge_methods": [
+          "merge",
+          "squash",
+          "rebase"
+        ]
+      },
+      "ruleset_source_type": "Repository",
+      "ruleset_source": "dexsword/dextech",
+      "ruleset_id": 22412408
+    },
+    {
+      "type": "required_status_checks",
+      "parameters": {
+        "strict_required_status_checks_policy": true,
+        "do_not_enforce_on_create": false,
+        "required_status_checks": [
+          {
+            "context": "checks",
+            "integration_id": 15368
+          },
+          {
+            "context": "Codex Review / gate",
+            "integration_id": 15368
+          },
+          {
+            "context": "Auto Merge / eligible",
+            "integration_id": 15368
+          },
+          {
+            "context": "merge-gate",
+            "integration_id": 15368
+          }
+        ]
+      },
+      "ruleset_source_type": "Repository",
+      "ruleset_source": "dexsword/dextech",
+      "ruleset_id": 22412408
+    }
+  ],
+  "historical_success_still_readable_after_failure": {
+    "conclusion": "success",
+    "head_sha": "9d641f28fc8ff6deeea4d0c5823e7d247251adb3",
+    "id": 101923935318,
+    "name": "merge-gate",
+    "status": "completed"
+  },
+  "captures": [
+    {
+      "scenario": "required_success",
+      "captured_at": "2026-09-08T03:28:43.708Z",
+      "run": {
+        "id": 34182241745,
+        "run_attempt": 1,
+        "check_suite_id": 92594493531,
+        "head_sha": "9d641f28fc8ff6deeea4d0c5823e7d247251adb3",
+        "event": "pull_request_target",
+        "path": ".github/workflows/codex-review.yml",
+        "status": "completed",
+        "conclusion": "success"
+      },
+      "gate": {
+        "id": 101923935318,
+        "name": "merge-gate",
+        "head_sha": "9d641f28fc8ff6deeea4d0c5823e7d247251adb3",
+        "status": "completed",
+        "conclusion": "success"
+      },
+      "pr": {
+        "state": "OPEN",
+        "isDraft": false,
+        "mergeable": "MERGEABLE",
+        "mergeStateStatus": "CLEAN",
+        "headRefOid": "9d641f28fc8ff6deeea4d0c5823e7d247251adb3",
+        "baseRefOid": "d6da1e64c2a7c29638826927ddcce4351e870bef",
+        "autoMergeRequest": null,
+        "reviewDecision": null,
+        "reviewThreads": {
+          "pageInfo": {
+            "hasNextPage": false
+          },
+          "nodes": []
+        },
+        "potentialMergeCommit": {
+          "oid": "5f879b14f850918b20e4c4ffd48bd1659795f693",
+          "statusCheckRollup": null
+        }
+      },
+      "required_head_checks": [
+        {
+          "__typename": "CheckRun",
+          "databaseId": 101923493623,
+          "name": "checks",
+          "status": "COMPLETED",
+          "conclusion": "SUCCESS",
+          "isRequired": true,
+          "checkSuite": {
+            "databaseId": 92594496465,
+            "app": {
+              "databaseId": 15368,
+              "slug": "github-actions"
+            }
+          }
+        },
+        {
+          "__typename": "CheckRun",
+          "databaseId": 101923935318,
+          "name": "merge-gate",
+          "status": "COMPLETED",
+          "conclusion": "SUCCESS",
+          "isRequired": true,
+          "checkSuite": {
+            "databaseId": 92594493531,
+            "app": {
+              "databaseId": 15368,
+              "slug": "github-actions"
+            }
+          }
+        },
+        {
+          "__typename": "CheckRun",
+          "databaseId": 101923645317,
+          "name": "Auto Merge / eligible",
+          "status": "COMPLETED",
+          "conclusion": "NEUTRAL",
+          "isRequired": true,
+          "checkSuite": {
+            "databaseId": 92594493531,
+            "app": {
+              "databaseId": 15368,
+              "slug": "github-actions"
+            }
+          }
+        },
+        {
+          "__typename": "CheckRun",
+          "databaseId": 101923635920,
+          "name": "Codex Review / gate",
+          "status": "COMPLETED",
+          "conclusion": "SUCCESS",
+          "isRequired": true,
+          "checkSuite": {
+            "databaseId": 92594493531,
+            "app": {
+              "databaseId": 15368,
+              "slug": "github-actions"
+            }
+          }
+        }
+      ],
+      "observations": {
+        "gate_bound_to_current_run_and_head": true,
+        "current_gate_required": true,
+        "merge_state": "CLEAN",
+        "no_auto_merge_request": true,
+        "synthetic_merge_has_checks": false
+      }
+    },
+    {
+      "scenario": "replacement_pending",
+      "captured_at": "2026-09-08T03:34:02.932Z",
+      "run": {
+        "id": 34182241745,
+        "run_attempt": 2,
+        "check_suite_id": 92594493531,
+        "head_sha": "9d641f28fc8ff6deeea4d0c5823e7d247251adb3",
+        "event": "pull_request_target",
+        "path": ".github/workflows/codex-review.yml",
+        "status": "in_progress",
+        "conclusion": null
+      },
+      "gate": {
+        "id": 101928421527,
+        "name": "merge-gate",
+        "head_sha": "9d641f28fc8ff6deeea4d0c5823e7d247251adb3",
+        "status": "in_progress",
+        "conclusion": null
+      },
+      "pr": {
+        "state": "OPEN",
+        "isDraft": false,
+        "mergeable": "MERGEABLE",
+        "mergeStateStatus": "BLOCKED",
+        "headRefOid": "9d641f28fc8ff6deeea4d0c5823e7d247251adb3",
+        "baseRefOid": "d6da1e64c2a7c29638826927ddcce4351e870bef",
+        "autoMergeRequest": null,
+        "reviewDecision": null,
+        "reviewThreads": {
+          "pageInfo": {
+            "hasNextPage": false
+          },
+          "nodes": []
+        },
+        "potentialMergeCommit": {
+          "oid": "5f879b14f850918b20e4c4ffd48bd1659795f693",
+          "statusCheckRollup": null
+        }
+      },
+      "required_head_checks": [
+        {
+          "__typename": "CheckRun",
+          "databaseId": 101923493623,
+          "name": "checks",
+          "status": "COMPLETED",
+          "conclusion": "SUCCESS",
+          "isRequired": true,
+          "checkSuite": {
+            "databaseId": 92594496465,
+            "app": {
+              "databaseId": 15368,
+              "slug": "github-actions"
+            }
+          }
+        },
+        {
+          "__typename": "CheckRun",
+          "databaseId": 101928421527,
+          "name": "merge-gate",
+          "status": "IN_PROGRESS",
+          "conclusion": null,
+          "isRequired": true,
+          "checkSuite": {
+            "databaseId": 92594493531,
+            "app": {
+              "databaseId": 15368,
+              "slug": "github-actions"
+            }
+          }
+        }
+      ],
+      "observations": {
+        "gate_bound_to_current_run_and_head": true,
+        "current_gate_required": true,
+        "merge_state": "BLOCKED",
+        "no_auto_merge_request": true,
+        "synthetic_merge_has_checks": false
+      }
+    },
+    {
+      "scenario": "isolated_native_failure",
+      "captured_at": "2026-09-08T03:34:44.035Z",
+      "run": {
+        "id": 34182241745,
+        "run_attempt": 2,
+        "check_suite_id": 92594493531,
+        "head_sha": "9d641f28fc8ff6deeea4d0c5823e7d247251adb3",
+        "event": "pull_request_target",
+        "path": ".github/workflows/codex-review.yml",
+        "status": "completed",
+        "conclusion": "failure"
+      },
+      "gate": {
+        "id": 101928421527,
+        "name": "merge-gate",
+        "head_sha": "9d641f28fc8ff6deeea4d0c5823e7d247251adb3",
+        "status": "completed",
+        "conclusion": "failure"
+      },
+      "pr": {
+        "state": "OPEN",
+        "isDraft": false,
+        "mergeable": "MERGEABLE",
+        "mergeStateStatus": "BLOCKED",
+        "headRefOid": "9d641f28fc8ff6deeea4d0c5823e7d247251adb3",
+        "baseRefOid": "d6da1e64c2a7c29638826927ddcce4351e870bef",
+        "autoMergeRequest": null,
+        "reviewDecision": null,
+        "reviewThreads": {
+          "pageInfo": {
+            "hasNextPage": false
+          },
+          "nodes": []
+        },
+        "potentialMergeCommit": {
+          "oid": "5f879b14f850918b20e4c4ffd48bd1659795f693",
+          "statusCheckRollup": null
+        }
+      },
+      "required_head_checks": [
+        {
+          "__typename": "CheckRun",
+          "databaseId": 101923493623,
+          "name": "checks",
+          "status": "COMPLETED",
+          "conclusion": "SUCCESS",
+          "isRequired": true,
+          "checkSuite": {
+            "databaseId": 92594496465,
+            "app": {
+              "databaseId": 15368,
+              "slug": "github-actions"
+            }
+          }
+        },
+        {
+          "__typename": "CheckRun",
+          "databaseId": 101928421527,
+          "name": "merge-gate",
+          "status": "COMPLETED",
+          "conclusion": "FAILURE",
+          "isRequired": true,
+          "checkSuite": {
+            "databaseId": 92594493531,
+            "app": {
+              "databaseId": 15368,
+              "slug": "github-actions"
+            }
+          }
+        },
+        {
+          "__typename": "CheckRun",
+          "databaseId": 101928517440,
+          "name": "Auto Merge / eligible",
+          "status": "COMPLETED",
+          "conclusion": "NEUTRAL",
+          "isRequired": true,
+          "checkSuite": {
+            "databaseId": 92594493531,
+            "app": {
+              "databaseId": 15368,
+              "slug": "github-actions"
+            }
+          }
+        },
+        {
+          "__typename": "CheckRun",
+          "databaseId": 101928517086,
+          "name": "Codex Review / gate",
+          "status": "COMPLETED",
+          "conclusion": "SUCCESS",
+          "isRequired": true,
+          "checkSuite": {
+            "databaseId": 92594493531,
+            "app": {
+              "databaseId": 15368,
+              "slug": "github-actions"
+            }
+          }
+        }
+      ],
+      "observations": {
+        "gate_bound_to_current_run_and_head": true,
+        "current_gate_required": true,
+        "merge_state": "BLOCKED",
+        "no_auto_merge_request": true,
+        "synthetic_merge_has_checks": false
+      }
+    },
+    {
+      "scenario": "full_review_pending",
+      "captured_at": "2026-09-08T03:38:16.388Z",
+      "run": {
+        "id": 34182241745,
+        "run_attempt": 3,
+        "check_suite_id": 92594493531,
+        "head_sha": "9d641f28fc8ff6deeea4d0c5823e7d247251adb3",
+        "event": "pull_request_target",
+        "path": ".github/workflows/codex-review.yml",
+        "status": "in_progress",
+        "conclusion": null
+      },
+      "gate": {
+        "id": 101929126525,
+        "name": "merge-gate",
+        "head_sha": "9d641f28fc8ff6deeea4d0c5823e7d247251adb3",
+        "status": "in_progress",
+        "conclusion": null
+      },
+      "pr": {
+        "state": "OPEN",
+        "isDraft": false,
+        "mergeable": "MERGEABLE",
+        "mergeStateStatus": "BLOCKED",
+        "headRefOid": "9d641f28fc8ff6deeea4d0c5823e7d247251adb3",
+        "baseRefOid": "d6da1e64c2a7c29638826927ddcce4351e870bef",
+        "autoMergeRequest": null,
+        "reviewDecision": null,
+        "reviewThreads": {
+          "pageInfo": {
+            "hasNextPage": false
+          },
+          "nodes": []
+        },
+        "potentialMergeCommit": {
+          "oid": "5f879b14f850918b20e4c4ffd48bd1659795f693",
+          "statusCheckRollup": null
+        }
+      },
+      "required_head_checks": [
+        {
+          "__typename": "CheckRun",
+          "databaseId": 101923493623,
+          "name": "checks",
+          "status": "COMPLETED",
+          "conclusion": "SUCCESS",
+          "isRequired": true,
+          "checkSuite": {
+            "databaseId": 92594496465,
+            "app": {
+              "databaseId": 15368,
+              "slug": "github-actions"
+            }
+          }
+        },
+        {
+          "__typename": "CheckRun",
+          "databaseId": 101929126525,
+          "name": "merge-gate",
+          "status": "IN_PROGRESS",
+          "conclusion": null,
+          "isRequired": true,
+          "checkSuite": {
+            "databaseId": 92594493531,
+            "app": {
+              "databaseId": 15368,
+              "slug": "github-actions"
+            }
+          }
+        },
+        {
+          "__typename": "CheckRun",
+          "databaseId": 101928831097,
+          "name": "Auto Merge / eligible",
+          "status": "IN_PROGRESS",
+          "conclusion": null,
+          "isRequired": true,
+          "checkSuite": {
+            "databaseId": 92594493531,
+            "app": {
+              "databaseId": 15368,
+              "slug": "github-actions"
+            }
+          }
+        },
+        {
+          "__typename": "CheckRun",
+          "databaseId": 101928808385,
+          "name": "Codex Review / gate",
+          "status": "IN_PROGRESS",
+          "conclusion": null,
+          "isRequired": true,
+          "checkSuite": {
+            "databaseId": 92594493531,
+            "app": {
+              "databaseId": 15368,
+              "slug": "github-actions"
+            }
+          }
+        }
+      ],
+      "observations": {
+        "gate_bound_to_current_run_and_head": true,
+        "current_gate_required": true,
+        "merge_state": "BLOCKED",
+        "no_auto_merge_request": true,
+        "synthetic_merge_has_checks": false
+      }
+    },
+    {
+      "scenario": "same_sha_recovery",
+      "captured_at": "2026-09-08T03:39:13.480Z",
+      "run": {
+        "id": 34182241745,
+        "run_attempt": 3,
+        "check_suite_id": 92594493531,
+        "head_sha": "9d641f28fc8ff6deeea4d0c5823e7d247251adb3",
+        "event": "pull_request_target",
+        "path": ".github/workflows/codex-review.yml",
+        "status": "completed",
+        "conclusion": "success"
+      },
+      "gate": {
+        "id": 101929126525,
+        "name": "merge-gate",
+        "head_sha": "9d641f28fc8ff6deeea4d0c5823e7d247251adb3",
+        "status": "completed",
+        "conclusion": "success"
+      },
+      "pr": {
+        "state": "OPEN",
+        "isDraft": false,
+        "mergeable": "MERGEABLE",
+        "mergeStateStatus": "CLEAN",
+        "headRefOid": "9d641f28fc8ff6deeea4d0c5823e7d247251adb3",
+        "baseRefOid": "d6da1e64c2a7c29638826927ddcce4351e870bef",
+        "autoMergeRequest": null,
+        "reviewDecision": null,
+        "reviewThreads": {
+          "pageInfo": {
+            "hasNextPage": false
+          },
+          "nodes": []
+        },
+        "potentialMergeCommit": {
+          "oid": "5f879b14f850918b20e4c4ffd48bd1659795f693",
+          "statusCheckRollup": null
+        }
+      },
+      "required_head_checks": [
+        {
+          "__typename": "CheckRun",
+          "databaseId": 101923493623,
+          "name": "checks",
+          "status": "COMPLETED",
+          "conclusion": "SUCCESS",
+          "isRequired": true,
+          "checkSuite": {
+            "databaseId": 92594496465,
+            "app": {
+              "databaseId": 15368,
+              "slug": "github-actions"
+            }
+          }
+        },
+        {
+          "__typename": "CheckRun",
+          "databaseId": 101929126525,
+          "name": "merge-gate",
+          "status": "COMPLETED",
+          "conclusion": "SUCCESS",
+          "isRequired": true,
+          "checkSuite": {
+            "databaseId": 92594493531,
+            "app": {
+              "databaseId": 15368,
+              "slug": "github-actions"
+            }
+          }
+        },
+        {
+          "__typename": "CheckRun",
+          "databaseId": 101928831097,
+          "name": "Auto Merge / eligible",
+          "status": "COMPLETED",
+          "conclusion": "NEUTRAL",
+          "isRequired": true,
+          "checkSuite": {
+            "databaseId": 92594493531,
+            "app": {
+              "databaseId": 15368,
+              "slug": "github-actions"
+            }
+          }
+        },
+        {
+          "__typename": "CheckRun",
+          "databaseId": 101928808385,
+          "name": "Codex Review / gate",
+          "status": "COMPLETED",
+          "conclusion": "SUCCESS",
+          "isRequired": true,
+          "checkSuite": {
+            "databaseId": 92594493531,
+            "app": {
+              "databaseId": 15368,
+              "slug": "github-actions"
+            }
+          }
+        }
+      ],
+      "observations": {
+        "gate_bound_to_current_run_and_head": true,
+        "current_gate_required": true,
+        "merge_state": "CLEAN",
+        "no_auto_merge_request": true,
+        "synthetic_merge_has_checks": false
+      }
+    }
+  ]
+}

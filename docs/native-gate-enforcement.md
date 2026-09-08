@@ -9,8 +9,8 @@ live enforcement is demonstrated.
 
 Use a ready, same-repository PR containing a protected script or workflow
 change. Verify its exact changed paths with the current policy before opening
-the PR: ordinary documentation is eligible for auto-merge and is unsuitable. Keep auto-merge absent throughout the experiment and do not attempt a
-merge. Keep `checks`, `Codex Review / gate`, and `Auto Merge / eligible` required,
+the PR: ordinary documentation is eligible for auto-merge and is unsuitable.
+Keep auto-merge absent throughout the experiment and do not attempt a merge. Keep `checks`, `Codex Review / gate`, and `Auto Merge / eligible` required,
 with their existing GitHub Actions source, strict updates, and review settings.
 Stage `merge-gate` from GitHub Actions alongside these requirements.
 
@@ -28,8 +28,8 @@ node scripts/collect-native-gate-evidence.cjs PR_NUMBER RUN_ID output.json
 
 Use a new output file for every observation. The command reports observations,
 not a pass verdict; account for other merge blockers before interpreting the
-result. Truncated check or review-thread connections reject the capture. Captures are multiple API
-reads, not an atomic snapshot, so repeat a capture when the run changes state.
+result. Truncated check or review-thread connections reject the capture.
+Captures are multiple API reads, not an atomic snapshot, so repeat a capture when the run changes state.
 
 ## Evidence required
 
@@ -52,20 +52,67 @@ statuses, disable protections, resolve somebody else's review, or use a real mer
 as a test. Preserve the staged requirement if a test fails and investigate before
 removing any legacy protection.
 
-## Evidence status
+## Live results: 2026-09-08
 
-The live experiment is pending. On 2026-09-08, the successful native check
-`101916781303` in [PR #33](https://github.com/dexsword/dextech/pull/33) matched run
-`34179823592`, attempt `1`, suite `92588241813`, and source
-`a91b34a941ba07ce177dcc1dcaf965b562ea44b2`. GitHub reported `isRequired: false`.
-That establishes native check identity, not native enforcement. The existing
-ruleset required only CI and the two legacy checks at that observation.
+The staged ruleset requires all four checks from GitHub Actions (`15368`).
+Strict updates, conversation resolution, and the existing administrator bypass
+remain unchanged. [PR #35](https://github.com/dexsword/dextech/pull/35) stayed open,
+ready, conflict-free, without review threads or an auto-merge request throughout.
+No merge was attempted and no check result was edited.
 
-The first documentation-only candidate, [PR #34](https://github.com/dexsword/dextech/pull/34),
-auto-merged under the existing allowlist. Its native check was still optional;
-that merge provides no evidence of native enforcement. Use a protected script
-or workflow candidate for the remaining experiment.
+The experiment held both commits fixed:
 
-Replace this pending status with the recorded scenarios and run links after the
-staged requirement is installed and tested. The subsequent migration removes the
-legacy requirements only after these checks pass.
+- Source: `9d641f28fc8ff6deeea4d0c5823e7d247251adb3`
+- Base: `d6da1e64c2a7c29638826927ddcce4351e870bef`
+- Review run: [34182241745](https://github.com/dexsword/dextech/actions/runs/34182241745)
+- Native suite: `92594493531`
+
+[Recorded API evidence](evidence/native-gate-pr35-2026-09-08.json) includes the
+current native check IDs, required head checks, synthetic merge status, effective
+rules, and timestamps. Every listed current native check matched the run, attempt,
+suite, source SHA and GitHub Actions App and was recognized as required.
+
+| UTC time | Attempt | Native check ID | Native result | GitHub merge state |
+| --- | --- | --- | --- | --- |
+| 03:28:43 | 1 | `101923935318` | Success | `CLEAN` |
+| 03:34:02 | 2 | `101928421527` | In progress | `BLOCKED` |
+| 03:34:44 | 2 | `101928421527` | Failure | `BLOCKED` |
+| 03:38:16 | 3 | `101929126525` | In progress | `BLOCKED` |
+| 03:39:13 | 3 | `101929126525` | Success | `CLEAN` |
+
+The failed-gate observation is isolated: CI and the legacy review gate were
+successful, legacy eligibility was neutral as expected for a protected change,
+and the current native gate was the only unsuccessful required check. The old
+native check `101923935318` remained readable as a historical success on the same
+source SHA. That historical success did not satisfy the replacement gate.
+
+The pending observations show that the current native job was recognized as
+required and the PR was blocked, but they do **not** isolate the native job as the
+only cause: legacy results were temporarily absent during attempt 2 and pending
+during attempt 3. Do not present those observations as an isolated pending test.
+
+### Rerun behavior and recovery
+
+Attempt 2 used GitHub's native-job rerun endpoint. While that rerun was starting,
+GitHub's GraphQL check summary omitted the legacy results; the native controller
+failed closed with `required-ci-missing-invalid-or-failed`. After GitHub restored
+the legacy results, the failed native gate still blocked merging. No CI failure
+or check mutation was needed to obtain the isolated failed-gate observation.
+
+Rerunning the entire review workflow produced attempt 3. Snapshot established
+fresh pending legacy checks, the review and native gate passed, and publication
+returned the PR to `CLEAN` on the same source and base. During migration, prefer
+a full workflow rerun over rerunning only the final native job.
+
+These observations establish recognition of the current native gate, isolated
+failure enforcement despite a prior same-SHA success, and recovery through a
+full rerun. They do not exercise administrator bypass, an actual merge attempt,
+or a native-only ruleset. The subsequent migration still needs fresh evaluation
+and acceptance checks with the legacy requirements removed.
+
+### Earlier observations
+
+PR #33's successful native check was optional before the staged rule was added.
+The first documentation-only candidate, PR #34, auto-merged under the existing
+allowlist while the native gate was optional. Neither establishes native
+enforcement; that is why the live experiment used protected PR #35.
