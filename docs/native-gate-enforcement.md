@@ -100,13 +100,18 @@ during attempt 3. Do not present those observations as an isolated pending test.
 
 ### Rerun behavior and recovery
 
-Attempt 2 used GitHub's native-job rerun endpoint. While that rerun was starting,
+The operator request record identifies attempt 2 as a native-job rerun. That
+record is included separately from the API observations because GitHub's run
+metadata does not expose which rerun endpoint was used. While the rerun started,
 GitHub's GraphQL check summary omitted the legacy results; the native controller
-failed closed with `required-ci-missing-invalid-or-failed`. After GitHub restored
+failed closed with `required-ci-missing-invalid-or-failed`. The artifact includes
+the timestamped diagnostic retrieved from job `101928421527` and its source
+endpoint. After GitHub restored
 the legacy results, the failed native gate still blocked merging. No CI failure
 or check mutation was needed to obtain the isolated failed-gate observation.
 
-Rerunning the entire review workflow produced attempt 3. Snapshot established
+The operator record identifies attempt 3 as a full-workflow rerun; the artifact
+also includes its job execution metadata. Snapshot established
 fresh pending legacy checks, the review and native gate passed, and publication
 returned the PR to `CLEAN` on the same source and base. During migration, prefer
 a full workflow rerun over rerunning only the final native job.
@@ -116,10 +121,3 @@ failure enforcement despite a prior same-SHA success, and recovery through a
 full rerun. They do not exercise administrator bypass, an actual merge attempt,
 or a native-only ruleset. The subsequent migration still needs fresh evaluation
 and acceptance checks with the legacy requirements removed.
-
-### Earlier observations
-
-PR #33's successful native check was optional before the staged rule was added.
-The first documentation-only candidate, PR #34, auto-merged under the existing
-allowlist while the native gate was optional. Neither establishes native
-enforcement; that is why the live experiment used protected PR #35.
