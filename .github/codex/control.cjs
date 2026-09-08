@@ -169,38 +169,16 @@ async function nativeGate(env, api, match, allowCompleted = false) {
   return check.id;
 }
 
-async function snapshot(env, api, sleep = wait) {
-  const event = JSON.parse(fs.readFileSync(env.GITHUB_EVENT_PATH, 'utf8'));
-  if (env.GITHUB_REPOSITORY !== REPOSITORY) fail();
-  if (env.GITHUB_EVENT_NAME !== 'pull_request_target') fail();
-  // Only a base retarget is a relevant edit; title/body edits cannot disarm a run.
-  if (event.action === 'edited' &&
-      !(typeof event.changes?.base?.ref?.from === 'string' && event.changes.base.ref.from.length > 0)) {
-    return output(env, { active: false });
-  }
-  if (!policy.sameCandidate({ ...event.pull_request, state: 'open' },
-      { number: event.pull_request?.number, head: event.pull_request?.head?.sha, base: env.GITHUB_SHA })) fail();
-  const number = event.pull_request?.number;
-  if (!Number.isSafeInteger(number) || number < 1) fail();
-  const pr = await api(`/repos/${REPOSITORY}/pulls/${number}`);
-  const main = await api(`/repos/${REPOSITORY}/git/ref/heads/main`);
-  const match = { number, head: event.pull_request?.head?.sha, base: main.object?.sha };
-  if (!sha(match.head) || !sha(match.base) ||
-      !policy.sameCandidate({ ...pr, state: 'open' }, match)) fail('stale');
-  if (env.GITHUB_SHA !== match.base) fail('stale');
-  await activeRun(env, api, number);
-  // Invalidate BEFORE waiting on CI, merge-ref availability, or model review.
-  await revoke(pr, api);
-  if (pr.state !== 'open') return output(env, { active: false });
-  const config = await gateConfiguration(api);
+// Draft cleanup and ready review share the same fail-closed invalidation.
+async function resetLegacyChecks(env, api, match, config) {
   const ids = {};
   const listed = config.legacy ? await api(`/repos/${REPOSITORY}/commits/${match.head}/check-runs?per_page=100&filter=all`) :
     { check_runs: [], total_count: 0 };
   if (!Array.isArray(listed.check_runs) || listed.total_count > 100) fail();
   for (const kind of config.legacy ? ['gate', 'eligible'] : []) {
-    const live = await api(`/repos/${REPOSITORY}/pulls/${number}`);
+    const live = await api(`/repos/${REPOSITORY}/pulls/${match.number}`);
     if (!policy.sameCandidate(live, match)) fail('stale');
-    await activeRun(env, api, number);
+    await activeRun(env, api, match.number);
     const existing = listed.check_runs.filter(c => c.name === CHECKS[kind] && c.app?.slug === 'github-actions');
     if (existing.some(c => !Number.isSafeInteger(c.id) || c.head_sha !== match.head)) fail();
     const check = existing.filter(c => c.status === 'in_progress' && c.conclusion === null)
@@ -223,8 +201,8 @@ async function snapshot(env, api, sleep = wait) {
     // First confirm the replacement is pending; then preserve old results under
     // historical names. Never rewrite a native CI check or manufacture success.
     for (const old of existing.filter(c => c.id !== result.id)) {
-      if (!policy.sameCandidate(await api(`/repos/${REPOSITORY}/pulls/${number}`), match)) fail('stale');
-      await activeRun(env, api, number);
+      if (!policy.sameCandidate(await api(`/repos/${REPOSITORY}/pulls/${match.number}`), match)) fail('stale');
+      await activeRun(env, api, match.number);
       const pending = await api(`/repos/${REPOSITORY}/check-runs/${result.id}`);
       if (pending.external_id !== checkBinding(env, match) || pending.head_sha !== match.head ||
           pending.status !== 'in_progress' || pending.conclusion !== null) fail('pending');
@@ -234,6 +212,49 @@ async function snapshot(env, api, sleep = wait) {
           historical.head_sha !== match.head || historical.conclusion !== old.conclusion) fail('pending');
     }
   }
+  return ids;
+}
+
+async function snapshot(env, api, sleep = wait) {
+  const event = JSON.parse(fs.readFileSync(env.GITHUB_EVENT_PATH, 'utf8'));
+  if (env.GITHUB_REPOSITORY !== REPOSITORY) fail();
+  if (env.GITHUB_EVENT_NAME !== 'pull_request_target') fail();
+  // Only a base retarget is a relevant edit; title/body edits cannot disarm a run.
+  if (event.action === 'edited' &&
+      !(typeof event.changes?.base?.ref?.from === 'string' && event.changes.base.ref.from.length > 0)) {
+    return output(env, { active: false });
+  }
+  const draftEvent = event.action !== 'closed' &&
+    (event.pull_request?.draft === true || event.action === 'converted_to_draft');
+  if (!policy.sameCandidate({ ...event.pull_request, state: 'open' },
+      { number: event.pull_request?.number, head: event.pull_request?.head?.sha,
+        base: draftEvent ? event.pull_request?.base?.sha : env.GITHUB_SHA })) fail();
+  const number = event.pull_request?.number;
+  if (!Number.isSafeInteger(number) || number < 1) fail();
+  const pr = await api(`/repos/${REPOSITORY}/pulls/${number}`);
+  if (draftEvent || (event.action !== 'closed' && pr.draft === true)) {
+    // Cleanup needs repository/PR/head identity, not an up-to-date merge
+    // candidate. A draft may be behind main or have conflicts. Never let a
+    // delayed draft event become a review just because the PR is now ready.
+    // This path can only revoke authorization; ready-PR validation stays below.
+    if (!policy.sameCandidate(pr, { number, head: event.pull_request.head.sha, base: pr.base?.sha })) fail('stale');
+    await activeRun(env, api, number);
+    await revoke(pr, api);
+    const config = await gateConfiguration(api);
+    await resetLegacyChecks(env, api, { number, head: pr.head.sha, base: pr.base.sha }, config);
+    return output(env, { active: false, draft: true });
+  }
+  const main = await api(`/repos/${REPOSITORY}/git/ref/heads/main`);
+  const match = { number, head: event.pull_request?.head?.sha, base: main.object?.sha };
+  if (!sha(match.head) || !sha(match.base) ||
+      !policy.sameCandidate({ ...pr, state: 'open' }, match)) fail('stale');
+  if (env.GITHUB_SHA !== match.base) fail('stale');
+  await activeRun(env, api, number);
+  // Invalidate BEFORE waiting on CI, merge-ref availability, or model review.
+  await revoke(pr, api);
+  if (pr.state !== 'open') return output(env, { active: false });
+  const config = await gateConfiguration(api);
+  const ids = await resetLegacyChecks(env, api, match, config);
   match.merge = await discoverMerge(api, match, sleep);
   output(env, { active: true, draft: pr.draft, legacy: config.legacy,
     head: match.head, base: match.base, merge: match.merge, number, ...ids });
@@ -324,11 +345,12 @@ async function publish(env, api) {
   // lets native auto-merge wait for GitHub branch protection.
   const ids = await pendingChecks(env, api, match);
   const pr = await currentCandidate(api, match);
+  if (env.PR_DRAFT !== 'false' || pr.draft !== false) fail('inactive');
   const reviewOK = env.DISARM_RESULT === 'success' && policy.reviewPass(env.REVIEW_JSON, env.REVIEW_RESULT);
   const classificationOK = env.ELIGIBILITY_RESULT === 'success' && ['true', 'false'].includes(env.ELIGIBLE);
   const eligible = classificationOK && env.ELIGIBLE === 'true';
   const manual = env.AUTO_MERGE_RESULT === 'success' && env.REQUEST_RESULT === 'skipped' &&
-    classificationOK && (!eligible || (env.PR_DRAFT === 'true' && pr.draft === true)) && pr.auto_merge === null;
+    classificationOK && !eligible && pr.auto_merge === null;
   const confirmed = env.AUTO_MERGE_RESULT === 'success' &&
     env.CONFIRMED_HEAD === match.head && env.CONFIRMED_BASE === match.base &&
     env.CONFIRMED_MERGE === match.merge &&
@@ -342,7 +364,7 @@ async function publish(env, api) {
     if (passed && !manual) await requirements(env, api, match, { allowCompleted: true });
     const live = await currentCandidate(api, match);
     if (passed && !manual && (live.draft !== false || !appRequestMatches(live, env.CONFIRMED_APP))) fail('unavailable');
-    if (passed && manual && eligible && live.draft !== true) fail('inactive');
+    if (passed && live.draft !== false) fail('inactive');
     await activeRun(env, api);
     const owned = await api(`/repos/${REPOSITORY}/check-runs/${ids[kind]}`);
     if (owned.external_id !== checkBinding(env, match) || owned.head_sha !== match.head ||
@@ -478,7 +500,7 @@ async function currentCandidate(api, match, ready = false, discovering = false) 
   return pr;
 }
 
-async function requirements(env, api, match, { allowCompleted = false, allowDraft = false } = {}) {
+async function requirements(env, api, match, { allowCompleted = false } = {}) {
   const config = await gateConfiguration(api);
   if (env.LEGACY_CHECKS !== String(config.legacy)) fail('stale');
   const nativeId = await nativeGate(env, api, match, allowCompleted);
@@ -502,7 +524,7 @@ async function requirements(env, api, match, { allowCompleted = false, allowDraf
   if (repository?.autoMergeAllowed !== true || repository.squashMergeAllowed !== true) fail('permission');
   if (pr?.headRefOid !== match.head || pr.baseRefOid !== match.base ||
       pr.potentialMergeCommit?.oid !== match.merge) fail('stale');
-  if (pr.state !== 'OPEN' || (pr.isDraft !== false && !(allowDraft && pr.isDraft === true))) fail('inactive');
+  if (pr.state !== 'OPEN' || pr.isDraft !== false) fail('inactive');
   if (pr.mergeable !== 'MERGEABLE') fail('merge');
   // Native auto-merge owns the wait for enforced human reviews/conversations.
   // Requiring them here would strand a passing review when approval arrives
@@ -538,13 +560,14 @@ function gatePrerequisites(env) {
       env.DISARM_RESULT !== 'success' || env.ELIGIBILITY_RESULT !== 'success' ||
       !['true', 'false'].includes(env.ELIGIBLE) || !['true', 'false'].includes(env.PR_DRAFT) ||
       !policy.reviewPass(env.REVIEW_JSON, env.REVIEW_RESULT)) fail('invalid');
+  if (env.PR_DRAFT !== 'false') fail('inactive');
 }
 
 async function prepareNativeGate(env, api) {
   gatePrerequisites(env);
   const match = expected(env);
-  await requirements(env, api, match, { allowDraft: true });
-  const pr = await currentCandidate(api, match);
+  await requirements(env, api, match);
+  const pr = await currentCandidate(api, match, true);
   if (String(pr.draft) !== env.PR_DRAFT) fail('stale');
   const request = env.ELIGIBLE === 'true' && pr.draft === false;
   if (!request && pr.auto_merge !== null) fail('unavailable');
