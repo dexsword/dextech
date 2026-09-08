@@ -23,8 +23,8 @@ const env = () => ({ SNAPSHOT_RESULT: 'success', SNAPSHOT_ACTIVE: 'true', PR_DRA
 const retiredChecks = { gate: 'Codex Review / gate', eligible: 'Auto Merge / eligible' };
 
 function readiness(current = pr()) {
-  const native = { name: 'checks', status: 'COMPLETED', conclusion: 'SUCCESS', isRequired: true,
-    checkSuite: { app: { databaseId: 15368, slug: 'github-actions' } } };
+  const native = { name: 'checks', databaseId: 900, status: 'COMPLETED', conclusion: 'SUCCESS', isRequired: true,
+    checkSuite: { databaseId: 98, app: { databaseId: 15368, slug: 'github-actions' } } };
   return { data: { repository: { autoMergeAllowed: true, squashMergeAllowed: true, pullRequest: {
     headRefOid: current.head.sha, baseRefOid: current.base.sha, state: current.state.toUpperCase(),
     isDraft: current.draft, mergeable: 'MERGEABLE', reviewDecision: null,
@@ -49,6 +49,8 @@ function nativeCheck() {
     app: { id: 15368, slug: 'github-actions' }, check_suite: { id: 99 } };
 }
 function mergeResponse(endpoint) {
+  if (endpoint.includes('/actions/workflows/ci.yml/runs?')) return { total_count: 1, workflow_runs: [ciRun()] };
+  if (endpoint.includes('/actions/runs/121/attempts/')) return { total_count: 1, jobs: [ciJob()] };
   if (endpoint.endsWith('/rules/branches/main')) return configuredRules();
   if (endpoint.endsWith('/attempts/1/jobs?per_page=100')) return { total_count: 1, jobs: [gateJob()] };
   if (endpoint.endsWith('/check-runs/103')) return nativeCheck();
@@ -59,6 +61,16 @@ function mergeResponse(endpoint) {
   if (endpoint.endsWith('/git/ref/pull/12/merge')) return { ref: 'refs/pull/12/merge', object: { type: 'commit', sha: merge } };
   if (endpoint.endsWith(`/git/commits/${merge}`)) return { sha: merge, parents: [{ sha: base }, { sha: head }] };
   return null;
+}
+
+function ciRun() {
+  return { id: 121, run_attempt: 1, check_suite_id: 98, event: 'pull_request',
+    path: '.github/workflows/ci.yml', head_sha: head, head_repository: { full_name: p.REPOSITORY },
+    pull_requests: [{ number: 12, head: { sha: head }, base: { sha: base, ref: 'main' } }] };
+}
+function ciJob() {
+  return { id: 900, run_id: 121, run_attempt: 1, name: 'checks', head_sha: head,
+    status: 'completed', conclusion: 'success' };
 }
 
 function mockAPI(current = pr()) {
@@ -1513,4 +1525,105 @@ test('cleanup installation checks live native-only rules in required CI with rea
   assert.match(step, /GH_TOKEN: \$\{\{ github.token \}\}/);
   assert.match(step, /run: node \.github\/codex\/control\.cjs verify-rules/);
   assert.ok(ci.indexOf('control.cjs verify-rules') < ci.indexOf('run: bash scripts/deployment-checks.sh'));
+});
+
+test('repeated same-SHA CI runs bind the current job and ignore historical results', async () => {
+  for (const historical of ['SUCCESS', 'FAILURE', 'CANCELLED']) {
+    const mock = nativeAPI();
+    const api = async (url, ...args) => {
+      const value = await mock.api(url, ...args);
+      if (url.includes('/actions/workflows/ci.yml/runs?')) {
+        value.total_count++;
+        value.workflow_runs.unshift({ ...ciRun(), id: 120, check_suite_id: 97 });
+      }
+      if (value.data?.repository?.pullRequest) {
+        const contexts = value.data.repository.pullRequest.commits.nodes[0].commit.statusCheckRollup.contexts.nodes;
+        contexts.unshift({ ...contexts.find(check => check.name === 'checks'), databaseId: 899,
+          conclusion: historical, checkSuite: { databaseId: 97, app: { databaseId: 15368, slug: 'github-actions' } } });
+      }
+      return value;
+    };
+    assert.deepEqual(await c.prepareNativeGate(env(), api), { request: true });
+  }
+});
+
+test('older CI success cannot replace a missing, failed, or foreign current CI result', async () => {
+  for (const variant of ['missing', 'failure', 'cancelled', 'not-required', 'wrong-suite', 'wrong-app', 'duplicate']) {
+    const mock = nativeAPI();
+    const api = async (url, ...args) => {
+      const value = await mock.api(url, ...args);
+      if (value.data?.repository?.pullRequest) {
+        const contexts = value.data.repository.pullRequest.commits.nodes[0].commit.statusCheckRollup.contexts;
+        const current = contexts.nodes.find(check => check.name === 'checks');
+        contexts.nodes.unshift({ ...structuredClone(current), databaseId: 899 });
+        if (variant === 'missing') contexts.nodes = contexts.nodes.filter(check => check !== current);
+        if (variant === 'failure') current.conclusion = 'FAILURE';
+        if (variant === 'cancelled') current.conclusion = 'CANCELLED';
+        if (variant === 'not-required') current.isRequired = false;
+        if (variant === 'wrong-suite') current.checkSuite.databaseId = 97;
+        if (variant === 'wrong-app') current.checkSuite.app.databaseId = 1;
+        if (variant === 'duplicate') contexts.nodes.push(structuredClone(current));
+      }
+      return value;
+    };
+    await assert.rejects(c.prepareNativeGate(env(), api), variant);
+    assert.equal(mock.calls.some(call => call.body?.query?.startsWith('mutation')), false);
+  }
+});
+
+test('CI binding rejects truncated metadata, newer mismatched runs and stale job attempts', async () => {
+  const transforms = [
+    value => { value.total_count++; },
+    value => { value.workflow_runs = []; value.total_count = 0; },
+    value => { value.workflow_runs[0].head_repository.full_name = 'fork/dextech'; },
+    value => { value.workflow_runs[0].event = 'workflow_dispatch'; },
+    value => { value.workflow_runs[0].path = '.github/workflows/other.yml'; },
+    value => { value.workflow_runs[0].head_sha = base; },
+    value => { value.workflow_runs[0].pull_requests[0].base.sha = head; },
+    value => { value.workflow_runs[0].pull_requests[0].number = 13; },
+    value => { value.workflow_runs[0].run_attempt = 2; },
+    value => { value.total_count++; value.workflow_runs.push({ ...ciRun(), id: 122, head_sha: base }); }
+  ];
+  for (const transform of transforms) {
+    const mock = nativeAPI();
+    await assert.rejects(c.prepareNativeGate(env(), async (url, ...args) => {
+      const value = await mock.api(url, ...args);
+      if (url.includes('/actions/workflows/ci.yml/runs?')) transform(value);
+      return value;
+    }));
+  }
+  for (const transform of [
+    value => { value.total_count++; },
+    value => { value.jobs = []; value.total_count = 0; },
+    value => { value.jobs[0].run_id = 120; },
+    value => { value.jobs[0].run_attempt = 2; },
+    value => { value.jobs[0].head_sha = base; },
+    value => { value.jobs[0].name = 'spoofed'; },
+    value => { value.jobs[0].conclusion = 'failure'; }
+  ]) {
+    const mock = nativeAPI();
+    await assert.rejects(c.prepareNativeGate(env(), async (url, ...args) => {
+      const value = await mock.api(url, ...args);
+      if (url.includes('/actions/runs/121/attempts/')) transform(value);
+      return value;
+    }));
+  }
+});
+
+test('same-SHA CI reruns require the job from the current attempt', async () => {
+  for (const currentVisible of [true, false]) {
+    const mock = nativeAPI();
+    const api = async (url, ...args) => {
+      const value = await mock.api(url, ...args);
+      if (url.includes('/actions/workflows/ci.yml/runs?')) value.workflow_runs[0].run_attempt = 2;
+      if (url.includes('/actions/runs/121/attempts/')) value.jobs[0] = { ...ciJob(), id: 901, run_attempt: 2 };
+      if (value.data?.repository?.pullRequest && currentVisible) {
+        const contexts = value.data.repository.pullRequest.commits.nodes[0].commit.statusCheckRollup.contexts.nodes;
+        contexts.push({ ...structuredClone(contexts.find(check => check.name === 'checks')), databaseId: 901 });
+      }
+      return value;
+    };
+    if (currentVisible) assert.deepEqual(await c.prepareNativeGate(env(), api), { request: true });
+    else await assert.rejects(c.prepareNativeGate(env(), api));
+  }
 });

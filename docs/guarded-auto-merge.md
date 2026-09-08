@@ -119,6 +119,14 @@ The controller rejects competing checks/statuses on the synthetic merge commit;
 it never copies native CI results to another SHA. GitHub itself waits for pending
 CI and required human reviews/conversations, without a local CI deadline.
 
+Multiple CI runs can exist on the same source commit after edits. The controller
+selects the latest PR CI run by run ID, verifies its PR/source/base and workflow,
+then binds the `checks` job from that run's current attempt to the exact GraphQL
+check and suite IDs and GitHub Actions source. Older results cannot substitute
+for a missing or failed current job. Historical same-name CI results are not
+counted as duplicate current jobs; GitHub still enforces branch protection.
+Incomplete run/job/context listings or ambiguous current identity fail closed.
+
 Per-PR concurrency cancels obsolete runs. Run ownership rejects cancelled runs,
 replaced attempts, and runs superseded by a newer relevant PR event. Closing or
 merging a PR does not trigger another review workflow, so it cannot cancel or
