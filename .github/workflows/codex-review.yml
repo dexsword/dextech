@@ -1,6 +1,6 @@
 name: Codex Review
-# Every ready PR edit receives a fresh required gate.
-run-name: "Codex review PR #${{ github.event.pull_request.number }}"
+# Irrelevant edits must neither cancel nor supersede an active review.
+run-name: "${{ github.event.action == 'edited' && !github.event.changes.base.ref.from && 'Ignored PR edit #' || 'Codex review PR #' }}${{ github.event.pull_request.number }}"
 
 # pull_request_target deliberately loads workflow/code/instructions from main.
 # Candidate files are read as data only; never run npm or scripts from the PR.
@@ -14,12 +14,13 @@ permissions:
   contents: read
 
 concurrency:
-  group: codex-review-pr-${{ github.event.pull_request.number }}
+  group: codex-review-pr-${{ github.event.action == 'edited' && !github.event.changes.base.ref.from && format('ignored-{0}', github.run_id) || github.event.pull_request.number }}
   cancel-in-progress: true
 
 jobs:
   snapshot:
     if: >-
+      (github.event.action != 'edited' || github.event.changes.base.ref.from) &&
       github.repository == 'dexsword/dextech' &&
       github.event.pull_request.base.repo.full_name == 'dexsword/dextech' &&
       github.event.pull_request.base.ref == 'main' &&
@@ -177,10 +178,11 @@ jobs:
 
   auto-merge:
     # A failed/skipped prerequisite must produce a failed required gate.
-    # Draft/closed events use another name: a skipped job must not pass the gate.
-    name: ${{ (github.event.pull_request.draft || github.event.action == 'converted_to_draft') && 'Draft PR' || github.event.action == 'closed' && 'Inactive PR event' || 'merge-gate' }}
+    # Draft/ignored events use another name: a skipped job must not pass the gate.
+    name: ${{ (github.event.pull_request.draft || github.event.action == 'converted_to_draft') && 'Draft PR' || (github.event.action == 'closed' || (github.event.action == 'edited' && !github.event.changes.base.ref.from)) && 'Inactive PR event' || 'merge-gate' }}
     if: >-
-      always() && !github.event.pull_request.draft && github.event.action != 'converted_to_draft' && github.event.action != 'closed'
+      always() && !github.event.pull_request.draft && github.event.action != 'converted_to_draft' && github.event.action != 'closed' &&
+      (github.event.action != 'edited' || github.event.changes.base.ref.from)
     needs: [snapshot, disarm, eligibility, review]
     runs-on: ubuntu-24.04
     timeout-minutes: 5

@@ -119,14 +119,6 @@ The controller rejects competing checks/statuses on the synthetic merge commit;
 it never copies native CI results to another SHA. GitHub itself waits for pending
 CI and required human reviews/conversations, without a local CI deadline.
 
-Multiple CI runs can exist on the same source commit after edits. The controller
-selects the latest PR CI run by run ID, verifies its PR/source/base and workflow,
-then binds the `checks` job from that run's current attempt to the exact GraphQL
-check and suite IDs and GitHub Actions source. Older results cannot substitute
-for a missing or failed current job. Historical same-name CI results are not
-counted as duplicate current jobs; GitHub still enforces branch protection.
-Incomplete run/job/context listings or ambiguous current identity fail closed.
-
 Per-PR concurrency cancels obsolete runs. Run ownership rejects cancelled runs,
 replaced attempts, and runs superseded by a newer relevant PR event. Closing or
 merging a PR does not trigger another review workflow, so it cannot cancel or
@@ -134,12 +126,10 @@ supersede the final jobs of the review that authorized the merge. Closed events
 from older workflow revisions return inactive before candidate validation or API
 access; they cannot rewrite checks or fail because main advanced at merge.
 Reopening runs a fresh snapshot and revokes stale auto-merge requests before
-review. All ready PR edits, including title/body changes and base retargets, start
-both CI and review in the normal per-PR concurrency groups. Each subscribed event
-must produce the real required check names; alternate-name skipped jobs can leave
-GitHub reporting a blocked PR despite older passing results. Edits therefore cost
-a fresh evaluation, while draft edits still defer AI review. This avoids relying
-on the mergeability of an older check suite. Closed events remain excluded. There are no check/status triggers or production
+review. Title/body-only edits use separate ignored concurrency groups and a
+different gate job name (`Inactive PR event`), so they
+cannot cancel a review or satisfy `merge-gate` through a skipped job. Base-retarget
+edits start both CI and review. There are no check/status triggers or production
 workflow-dispatch overrides in the review workflow.
 
 API reads and writes are not atomic. Repeated identity checks supplement the
@@ -203,13 +193,11 @@ validator. This is a dated observation, not an authorization artifact; every
 ready run still reads and validates the live API response. Recheck the endpoint
 before merging if repository settings change.
 
-PR #36's required `checks` job additionally runs `control.cjs verify-rules`
-against the live API using the candidate's native-only validator and the built-in
-read-only token, before dependency installation. The cleanup therefore cannot
-pass its required CI with legacy requirements still configured. This one-time
-installation check is scoped to same-repository PR #36; later reviews validate
-live rules in their trusted controller. No operator credentials or merge App
-token are involved. Settings can change after a check; rerun required CI if they do.
+PR #36's required `checks` job also invokes `control.cjs verify-rules` against
+the live API using the candidate validator and the built-in read-only token,
+before dependency installation. This one-time installation check rejects legacy
+requirements; it is scoped to same-repository PR #36. Subsequent reviews validate
+live rules in their trusted controller. Rerun required CI if settings change.
 
 The staged native-gate enforcement evidence is recorded in
 [PR #35](https://github.com/dexsword/dextech/pull/35). Retire the legacy requirements

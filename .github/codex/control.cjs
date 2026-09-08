@@ -170,6 +170,11 @@ async function snapshot(env, api, sleep = wait) {
   // Older workflow revisions may still deliver closed events. They have no
   // merge candidate to validate and must not mutate checks or authorization.
   if (event.action === 'closed') return output(env, { active: false });
+  // Only a base retarget is a relevant edit; title/body edits cannot disarm a run.
+  if (event.action === 'edited' &&
+      !(typeof event.changes?.base?.ref?.from === 'string' && event.changes.base.ref.from.length > 0)) {
+    return output(env, { active: false });
+  }
   const draftEvent = event.action !== 'closed' &&
     (event.pull_request?.draft === true || event.action === 'converted_to_draft');
   if (!policy.sameCandidate({ ...event.pull_request, state: 'open' },
@@ -386,40 +391,9 @@ async function currentCandidate(api, match, ready = false, discovering = false) 
   return pr;
 }
 
-// Metadata edits can create several CI suites on one source SHA. Bind the
-// actual current CI job instead of counting every historical same-name check.
-async function currentCI(api, match) {
-  const listed = await api(`/repos/${REPOSITORY}/actions/workflows/ci.yml/runs?event=pull_request&head_sha=${match.head}&per_page=100`);
-  if (!Array.isArray(listed.workflow_runs) || listed.total_count !== listed.workflow_runs.length ||
-      listed.total_count > 100) fail('ci');
-  const runs = listed.workflow_runs.filter(run => run.pull_requests?.some(pr => pr.number === match.number));
-  if (!runs.length || runs.some(run => !Number.isSafeInteger(run.id) || run.id < 1)) fail('ci');
-  const run = runs.reduce((latest, candidate) => candidate.id > latest.id ? candidate : latest);
-  const pulls = run.pull_requests.filter(pr => pr.number === match.number);
-  if (run.event !== 'pull_request' || run.path !== '.github/workflows/ci.yml' ||
-      run.head_sha !== match.head || run.head_repository?.full_name !== REPOSITORY ||
-      pulls.length !== 1 || pulls[0].head?.sha !== match.head ||
-      pulls[0].base?.sha !== match.base || pulls[0].base?.ref !== 'main' ||
-      !Number.isSafeInteger(run.check_suite_id) || run.check_suite_id < 1 ||
-      !Number.isSafeInteger(run.run_attempt) || run.run_attempt < 1) fail('ci');
-  const jobs = await api(`/repos/${REPOSITORY}/actions/runs/${run.id}/attempts/${run.run_attempt}/jobs?per_page=100`);
-  if (!Array.isArray(jobs.jobs) || jobs.total_count !== jobs.jobs.length || jobs.total_count > 100) fail('ci');
-  const found = jobs.jobs.filter(job => job.name === 'checks');
-  if (found.length !== 1) fail('ci');
-  const job = found[0];
-  const checkId = /^https:\/\/api\.github\.com\/repos\/dexsword\/dextech\/check-runs\/([1-9][0-9]*)$/.exec(job.check_run_url)?.[1];
-  if (!Number.isSafeInteger(job.id) || job.id < 1 || job.run_id !== run.id ||
-      job.run_attempt !== run.run_attempt || job.head_sha !== match.head ||
-      !checkId || !Number.isSafeInteger(Number(checkId))) fail('ci');
-  if (!checkAllowsNativeWait({ name: job.name, status: job.status?.toUpperCase(),
-    conclusion: job.conclusion === null ? null : job.conclusion?.toUpperCase() })) fail('ci');
-  return { id: Number(checkId), suite: run.check_suite_id };
-}
-
 async function requirements(env, api, match) {
   await gateConfiguration(api);
   const nativeId = await nativeGate(env, api, match);
-  const ciIdentity = await currentCI(api, match);
   const result = await api('/graphql', 'POST', {
     query: `query($number: Int!) { repository(owner: "dexsword", name: "dextech") {
       autoMergeAllowed squashMergeAllowed pullRequest(number: $number) {
@@ -428,7 +402,7 @@ async function requirements(env, api, match) {
         commits(last: 1) { nodes { commit { oid statusCheckRollup { contexts(first: 100) {
           pageInfo { hasNextPage } nodes {
             ... on CheckRun { databaseId name status conclusion isRequired(pullRequestNumber: $number)
-              checkSuite { databaseId app { databaseId slug } } }
+              checkSuite { app { databaseId slug } } }
             ... on StatusContext { context state isRequired(pullRequestNumber: $number) }
           }
         } } } } }
@@ -456,15 +430,14 @@ async function requirements(env, api, match) {
   const contexts = commit?.statusCheckRollup?.contexts;
   if (commit?.oid !== match.head || contexts?.pageInfo?.hasNextPage !== false || !Array.isArray(contexts.nodes)) fail('ci');
   const required = contexts.nodes.filter(c => c.isRequired === true);
-  const ci = required.filter(c => c.name === 'checks' && c.databaseId === ciIdentity.id &&
-    c.checkSuite?.databaseId === ciIdentity.suite && c.checkSuite?.app?.slug === 'github-actions' &&
+  const ci = required.filter(c => c.name === 'checks' && c.checkSuite?.app?.slug === 'github-actions' &&
     c.checkSuite.app.databaseId === 15368);
   if (ci.length !== 1 || !checkAllowsNativeWait(ci[0])) fail('ci');
   const native = contexts.nodes.filter(c => c.databaseId === nativeId && c.name === NATIVE_GATE &&
     c.checkSuite?.app?.slug === 'github-actions' && c.checkSuite.app.databaseId === 15368);
   if (native.length !== 1 || !checkAllowsNativeWait(native[0]) ||
       native[0].isRequired !== true) fail('ci');
-  if (required.some(c => c.name !== NATIVE_GATE && c.name !== 'checks' &&
+  if (required.some(c => c.name !== NATIVE_GATE &&
       !checkAllowsNativeWait(c))) fail('ci');
 }
 

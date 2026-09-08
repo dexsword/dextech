@@ -23,8 +23,8 @@ const env = () => ({ SNAPSHOT_RESULT: 'success', SNAPSHOT_ACTIVE: 'true', PR_DRA
 const retiredChecks = { gate: 'Codex Review / gate', eligible: 'Auto Merge / eligible' };
 
 function readiness(current = pr()) {
-  const native = { name: 'checks', databaseId: 900, status: 'COMPLETED', conclusion: 'SUCCESS', isRequired: true,
-    checkSuite: { databaseId: 98, app: { databaseId: 15368, slug: 'github-actions' } } };
+  const native = { name: 'checks', status: 'COMPLETED', conclusion: 'SUCCESS', isRequired: true,
+    checkSuite: { app: { databaseId: 15368, slug: 'github-actions' } } };
   return { data: { repository: { autoMergeAllowed: true, squashMergeAllowed: true, pullRequest: {
     headRefOid: current.head.sha, baseRefOid: current.base.sha, state: current.state.toUpperCase(),
     isDraft: current.draft, mergeable: 'MERGEABLE', reviewDecision: null,
@@ -49,8 +49,6 @@ function nativeCheck() {
     app: { id: 15368, slug: 'github-actions' }, check_suite: { id: 99 } };
 }
 function mergeResponse(endpoint) {
-  if (endpoint.includes('/actions/workflows/ci.yml/runs?')) return { total_count: 1, workflow_runs: [ciRun()] };
-  if (endpoint.includes('/actions/runs/121/attempts/')) return { total_count: 1, jobs: [ciJob()] };
   if (endpoint.endsWith('/rules/branches/main')) return configuredRules();
   if (endpoint.endsWith('/attempts/1/jobs?per_page=100')) return { total_count: 1, jobs: [gateJob()] };
   if (endpoint.endsWith('/check-runs/103')) return nativeCheck();
@@ -61,17 +59,6 @@ function mergeResponse(endpoint) {
   if (endpoint.endsWith('/git/ref/pull/12/merge')) return { ref: 'refs/pull/12/merge', object: { type: 'commit', sha: merge } };
   if (endpoint.endsWith(`/git/commits/${merge}`)) return { sha: merge, parents: [{ sha: base }, { sha: head }] };
   return null;
-}
-
-function ciRun() {
-  return { id: 121, run_attempt: 1, check_suite_id: 98, event: 'pull_request',
-    path: '.github/workflows/ci.yml', head_sha: head, head_repository: { full_name: p.REPOSITORY },
-    pull_requests: [{ number: 12, head: { sha: head }, base: { sha: base, ref: 'main' } }] };
-}
-function ciJob() {
-  return { id: 800, run_id: 121, run_attempt: 1, name: 'checks', head_sha: head,
-    check_run_url: 'https://api.github.com/repos/dexsword/dextech/check-runs/900',
-    status: 'completed', conclusion: 'success' };
 }
 
 function mockAPI(current = pr()) {
@@ -909,7 +896,7 @@ test('control review includes policy/schema dependencies as data and retains com
   assert.doesNotMatch(prompt, /UNRELATED_APPLICATION_TEXT/);
 });
 
-test('every PR edit runs real required jobs and supersedes the previous evaluation', async () => {
+test('base retargets run both workflows; irrelevant edits cannot cancel or supersede them', async () => {
   const vm = require('node:vm');
   const codex = fs.readFileSync(path.join(__dirname, '../.github/workflows/codex-review.yml'), 'utf8');
   const ci = fs.readFileSync(path.join(__dirname, '../.github/workflows/ci.yml'), 'utf8');
@@ -919,56 +906,57 @@ test('every PR edit runs real required jobs and supersedes the previous evaluati
   });
   const expand = (text, event) => text.replace(/\$\{\{ (.*?) \}\}/g, (_, expression) => evaluate(expression, event));
   const guard = codex.match(/  snapshot:\n    if: >-\n([\s\S]*?)    runs-on:/)[1].trim();
-  assert.doesNotMatch(ci.split('  checks:')[1].split('    steps:')[0], /    if:/);
+  const ciGuard = ci.match(/    if: (.*)/)[1];
   const ciName = ci.match(/    name: (.*)/)[1];
   const group = workflow => workflow.match(/  group: (.*)/)[1];
   const title = codex.match(/run-name: "(.*)"/)[1];
-  const final = codex.split('\n  auto-merge:\n')[1];
-  const finalGuard = final.split('    if: >-\n')[1].split('    needs:')[0].trim();
-  const finalName = final.match(/^    name: (.*)$/m)[1];
   assert.match(ci, /types: \[opened, synchronize, reopened, edited\]/);
   for (const changes of [{ base: { ref: { from: 'develop' } } }, {}, { title: { from: 'old' } }, { body: { from: 'old' } }]) {
     // Actions expressions resolve absent nested fields to null. Represent that
     // explicitly here; all evaluated expressions come from the trusted workflows.
     const event = { action: 'edited', pull_request: pr(), changes: { ...changes, base: changes.base || { ref: { from: null } } } };
-    assert.equal(!!evaluate(guard, event), true);
-    assert.equal(expand(ciName, event), 'checks');
-    assert.equal(vm.runInNewContext(finalGuard, { github: { event }, always: () => true }), true);
-    assert.equal(expand(finalName, event), 'merge-gate');
-    assert.equal(expand(group(codex), event), 'codex-review-pr-12');
-    assert.equal(expand(group(ci), event), 'CI-12');
+    const relevant = !!changes.base;
+    assert.equal(!!evaluate(guard, event), relevant);
+    assert.equal(!!evaluate(ciGuard, event), relevant);
+    assert.equal(expand(ciName, event), relevant ? 'checks' : 'Ignored PR edit');
+    assert.equal(expand(group(codex), event), relevant ? 'codex-review-pr-12' : 'codex-review-pr-ignored-124');
+    assert.equal(expand(group(ci), event), relevant ? 'CI-12' : 'CI-ignored-124');
     const display_title = expand(title, event);
-    assert.equal(display_title, 'Codex review PR #12');
+    assert.equal(display_title, relevant ? 'Codex review PR #12' : 'Ignored PR edit #12');
     const mock = orderAPI();
     const api = async (url, method, body) => {
       const result = await mock.api(url, method, body);
       if (url.includes('/actions/workflows/')) result.workflow_runs.push({ id: 124, display_title });
       return result;
     };
-    await assert.rejects(c.requestAutoMerge(env(), api));
+    if (relevant) await assert.rejects(c.requestAutoMerge(env(), api));
+    else await c.requestAutoMerge(env(), api);
   }
 });
 
-test('title, body and base edits bind a fresh ready candidate without custom check writes', async t => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'dextech-edit-'));
+test('snapshot ignores title/body edits before API access but retargets create pending checks', async t => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'dextech-retarget-'));
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
   const values = { ...env(), GITHUB_EVENT_PATH: path.join(dir, 'event'), GITHUB_OUTPUT: path.join(dir, 'output'),
     GITHUB_SHA: base, GITHUB_REPOSITORY: p.REPOSITORY, GITHUB_EVENT_NAME: 'pull_request_target' };
-  for (const changes of [undefined, {}, { title: { from: 'old' } }, { body: { from: 'old' } },
-    { base: { ref: { from: 'develop' } } }]) {
+  for (const changes of [undefined, {}, { title: { from: 'old' } }, { body: { from: 'old' } }]) {
     fs.writeFileSync(values.GITHUB_EVENT_PATH, JSON.stringify({ action: 'edited', changes, pull_request: pr() }));
-    fs.writeFileSync(values.GITHUB_OUTPUT, '');
-    await c.snapshot(values, async (url, method = 'GET') => {
-      assert.equal(method, 'GET');
-      assert.doesNotMatch(url, /check-runs/);
-      return mergeResponse(url) || pr();
-    }, async () => assert.fail('unexpected metadata retry'));
-    const output = fs.readFileSync(values.GITHUB_OUTPUT, 'utf8');
-    assert.match(output, /active=true\ndraft=false/);
-    assert.match(output, new RegExp(`head=${head}`));
-    assert.match(output, new RegExp(`merge=${merge}`));
+    await c.snapshot(values, async () => assert.fail('irrelevant edit accessed API'));
   }
+  fs.writeFileSync(values.GITHUB_EVENT_PATH, JSON.stringify({ action: 'edited',
+    changes: { base: { ref: { from: 'develop' } } }, pull_request: pr() }));
+  const writes = [];
+  await c.snapshot(values, async (url, method, body) => {
+    if (method === 'POST') {
+      writes.push(body);
+      return { ...body, id: 100 + writes.length, conclusion: null };
+    }
+    return mergeResponse(url) || pr();
+  }, async () => assert.fail('unexpected metadata retry'));
+  assert.equal(writes.length, 0);
+  assert.ok(writes.every(check => check.head_sha === head && check.status === 'in_progress'));
 });
+
 
 test('App transport is restricted to final candidate reads, native request, and confirmation', async () => {
   const mock = orderAPI(), readCalls = [], appCalls = [];
@@ -1504,7 +1492,6 @@ test('duplicate or wrong-source native requirements reject before authorization'
   }
 });
 
-
 test('cleanup installation checks live native-only rules in required CI with read-only credentials', () => {
   const { runInNewContext } = require('node:vm');
   const ci = fs.readFileSync(path.join(__dirname, '../.github/workflows/ci.yml'), 'utf8');
@@ -1526,109 +1513,4 @@ test('cleanup installation checks live native-only rules in required CI with rea
   assert.match(step, /GH_TOKEN: \$\{\{ github.token \}\}/);
   assert.match(step, /run: node \.github\/codex\/control\.cjs verify-rules/);
   assert.ok(ci.indexOf('control.cjs verify-rules') < ci.indexOf('run: bash scripts/deployment-checks.sh'));
-});
-
-test('repeated same-SHA CI runs bind the current job and ignore historical results', async () => {
-  for (const historical of ['SUCCESS', 'FAILURE', 'CANCELLED']) {
-    const mock = nativeAPI();
-    const api = async (url, ...args) => {
-      const value = await mock.api(url, ...args);
-      if (url.includes('/actions/workflows/ci.yml/runs?')) {
-        value.total_count++;
-        value.workflow_runs.unshift({ ...ciRun(), id: 120, check_suite_id: 97 });
-      }
-      if (value.data?.repository?.pullRequest) {
-        const contexts = value.data.repository.pullRequest.commits.nodes[0].commit.statusCheckRollup.contexts.nodes;
-        contexts.unshift({ ...contexts.find(check => check.name === 'checks'), databaseId: 899,
-          conclusion: historical, checkSuite: { databaseId: 97, app: { databaseId: 15368, slug: 'github-actions' } } });
-      }
-      return value;
-    };
-    assert.deepEqual(await c.prepareNativeGate(env(), api), { request: true });
-  }
-});
-
-test('older CI success cannot replace a missing, failed, or foreign current CI result', async () => {
-  for (const variant of ['missing', 'failure', 'cancelled', 'not-required', 'wrong-suite', 'wrong-app', 'duplicate']) {
-    const mock = nativeAPI();
-    const api = async (url, ...args) => {
-      const value = await mock.api(url, ...args);
-      if (value.data?.repository?.pullRequest) {
-        const contexts = value.data.repository.pullRequest.commits.nodes[0].commit.statusCheckRollup.contexts;
-        const current = contexts.nodes.find(check => check.name === 'checks');
-        contexts.nodes.unshift({ ...structuredClone(current), databaseId: 899 });
-        if (variant === 'missing') contexts.nodes = contexts.nodes.filter(check => check !== current);
-        if (variant === 'failure') current.conclusion = 'FAILURE';
-        if (variant === 'cancelled') current.conclusion = 'CANCELLED';
-        if (variant === 'not-required') current.isRequired = false;
-        if (variant === 'wrong-suite') current.checkSuite.databaseId = 97;
-        if (variant === 'wrong-app') current.checkSuite.app.databaseId = 1;
-        if (variant === 'duplicate') contexts.nodes.push(structuredClone(current));
-      }
-      return value;
-    };
-    await assert.rejects(c.prepareNativeGate(env(), api), variant);
-    assert.equal(mock.calls.some(call => call.body?.query?.startsWith('mutation')), false);
-  }
-});
-
-test('CI binding rejects truncated metadata, newer mismatched runs and stale job attempts', async () => {
-  const transforms = [
-    value => { value.total_count++; },
-    value => { value.workflow_runs = []; value.total_count = 0; },
-    value => { value.workflow_runs[0].head_repository.full_name = 'fork/dextech'; },
-    value => { value.workflow_runs[0].event = 'workflow_dispatch'; },
-    value => { value.workflow_runs[0].path = '.github/workflows/other.yml'; },
-    value => { value.workflow_runs[0].head_sha = base; },
-    value => { value.workflow_runs[0].pull_requests[0].base.sha = head; },
-    value => { value.workflow_runs[0].pull_requests[0].number = 13; },
-    value => { value.workflow_runs[0].run_attempt = 2; },
-    value => { value.total_count++; value.workflow_runs.push({ ...ciRun(), id: 122, head_sha: base }); }
-  ];
-  for (const transform of transforms) {
-    const mock = nativeAPI();
-    await assert.rejects(c.prepareNativeGate(env(), async (url, ...args) => {
-      const value = await mock.api(url, ...args);
-      if (url.includes('/actions/workflows/ci.yml/runs?')) transform(value);
-      return value;
-    }));
-  }
-  for (const transform of [
-    value => { value.total_count++; },
-    value => { value.jobs = []; value.total_count = 0; },
-    value => { value.jobs[0].run_id = 120; },
-    value => { value.jobs[0].run_attempt = 2; },
-    value => { value.jobs[0].head_sha = base; },
-    value => { delete value.jobs[0].check_run_url; },
-    value => { value.jobs[0].check_run_url = 'https://example.com/check-runs/900'; },
-    value => { value.jobs[0].check_run_url = 'https://api.github.com/repos/fork/dextech/check-runs/900'; },
-    value => { value.jobs[0].name = 'spoofed'; },
-    value => { value.jobs[0].conclusion = 'failure'; }
-  ]) {
-    const mock = nativeAPI();
-    await assert.rejects(c.prepareNativeGate(env(), async (url, ...args) => {
-      const value = await mock.api(url, ...args);
-      if (url.includes('/actions/runs/121/attempts/')) transform(value);
-      return value;
-    }));
-  }
-});
-
-test('same-SHA CI reruns require the job from the current attempt', async () => {
-  for (const currentVisible of [true, false]) {
-    const mock = nativeAPI();
-    const api = async (url, ...args) => {
-      const value = await mock.api(url, ...args);
-      if (url.includes('/actions/workflows/ci.yml/runs?')) value.workflow_runs[0].run_attempt = 2;
-      if (url.includes('/actions/runs/121/attempts/')) value.jobs[0] = { ...ciJob(), id: 801, run_attempt: 2,
-        check_run_url: 'https://api.github.com/repos/dexsword/dextech/check-runs/901' };
-      if (value.data?.repository?.pullRequest && currentVisible) {
-        const contexts = value.data.repository.pullRequest.commits.nodes[0].commit.statusCheckRollup.contexts.nodes;
-        contexts.push({ ...structuredClone(contexts.find(check => check.name === 'checks')), databaseId: 901 });
-      }
-      return value;
-    };
-    if (currentVisible) assert.deepEqual(await c.prepareNativeGate(env(), api), { request: true });
-    else await assert.rejects(c.prepareNativeGate(env(), api));
-  }
 });

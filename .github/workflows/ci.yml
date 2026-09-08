@@ -10,13 +10,14 @@ permissions:
   contents: read
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  group: ${{ github.workflow }}-${{ github.event.action == 'edited' && !github.event.changes.base.ref.from && format('ignored-{0}', github.run_id) || github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 jobs:
   checks:
-    # Every subscribed event must produce the real required check.
-    name: checks
+    # A skipped title/body edit must not add a second required `checks` context.
+    name: ${{ github.event.action == 'edited' && !github.event.changes.base.ref.from && 'Ignored PR edit' || 'checks' }}
+    if: github.event.action != 'edited' || github.event.changes.base.ref.from
     runs-on: ubuntu-latest
     timeout-minutes: 10
     defaults:
@@ -31,8 +32,8 @@ jobs:
         uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6.3.0
         with:
           node-version: '22'
-      # Installation prerequisite belongs in required CI because this PR's
-      # pull_request_target review still uses the migration-capable base code.
+      # Enforce the installation prerequisite in required CI; this PR's target
+      # review still runs the migration-capable controller from protected main.
       - name: Verify live native-only rules before installing cleanup
         if: github.repository == 'dexsword/dextech' && github.event_name == 'pull_request' && github.event.pull_request.number == 36 && github.event.pull_request.head.repo.full_name == 'dexsword/dextech'
         env:
