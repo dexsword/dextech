@@ -4,6 +4,7 @@
   "description": "Dex Tech - Henderson NV Tech Support Website",
   "main": "server.js",
   "scripts": {
+    "assets:version": "node scripts/version-static-assets.js",
     "test": "node --test test/*.test.js",
     "start": "node server.js",
     "dev": "node --watch server.js",
