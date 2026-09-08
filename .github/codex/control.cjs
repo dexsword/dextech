@@ -407,11 +407,13 @@ async function currentCI(api, match) {
   const found = jobs.jobs.filter(job => job.name === 'checks');
   if (found.length !== 1) fail('ci');
   const job = found[0];
+  const checkId = /^https:\/\/api\.github\.com\/repos\/dexsword\/dextech\/check-runs\/([1-9][0-9]*)$/.exec(job.check_run_url)?.[1];
   if (!Number.isSafeInteger(job.id) || job.id < 1 || job.run_id !== run.id ||
-      job.run_attempt !== run.run_attempt || job.head_sha !== match.head) fail('ci');
+      job.run_attempt !== run.run_attempt || job.head_sha !== match.head ||
+      !checkId || !Number.isSafeInteger(Number(checkId))) fail('ci');
   if (!checkAllowsNativeWait({ name: job.name, status: job.status?.toUpperCase(),
     conclusion: job.conclusion === null ? null : job.conclusion?.toUpperCase() })) fail('ci');
-  return { id: job.id, suite: run.check_suite_id };
+  return { id: Number(checkId), suite: run.check_suite_id };
 }
 
 async function requirements(env, api, match) {

@@ -69,7 +69,8 @@ function ciRun() {
     pull_requests: [{ number: 12, head: { sha: head }, base: { sha: base, ref: 'main' } }] };
 }
 function ciJob() {
-  return { id: 900, run_id: 121, run_attempt: 1, name: 'checks', head_sha: head,
+  return { id: 800, run_id: 121, run_attempt: 1, name: 'checks', head_sha: head,
+    check_run_url: 'https://api.github.com/repos/dexsword/dextech/check-runs/900',
     status: 'completed', conclusion: 'success' };
 }
 
@@ -1598,6 +1599,9 @@ test('CI binding rejects truncated metadata, newer mismatched runs and stale job
     value => { value.jobs[0].run_id = 120; },
     value => { value.jobs[0].run_attempt = 2; },
     value => { value.jobs[0].head_sha = base; },
+    value => { delete value.jobs[0].check_run_url; },
+    value => { value.jobs[0].check_run_url = 'https://example.com/check-runs/900'; },
+    value => { value.jobs[0].check_run_url = 'https://api.github.com/repos/fork/dextech/check-runs/900'; },
     value => { value.jobs[0].name = 'spoofed'; },
     value => { value.jobs[0].conclusion = 'failure'; }
   ]) {
@@ -1616,7 +1620,8 @@ test('same-SHA CI reruns require the job from the current attempt', async () => 
     const api = async (url, ...args) => {
       const value = await mock.api(url, ...args);
       if (url.includes('/actions/workflows/ci.yml/runs?')) value.workflow_runs[0].run_attempt = 2;
-      if (url.includes('/actions/runs/121/attempts/')) value.jobs[0] = { ...ciJob(), id: 901, run_attempt: 2 };
+      if (url.includes('/actions/runs/121/attempts/')) value.jobs[0] = { ...ciJob(), id: 801, run_attempt: 2,
+        check_run_url: 'https://api.github.com/repos/dexsword/dextech/check-runs/901' };
       if (value.data?.repository?.pullRequest && currentVisible) {
         const contexts = value.data.repository.pullRequest.commits.nodes[0].commit.statusCheckRollup.contexts.nodes;
         contexts.push({ ...structuredClone(contexts.find(check => check.name === 'checks')), databaseId: 901 });
