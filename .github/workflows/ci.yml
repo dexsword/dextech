@@ -32,6 +32,13 @@ jobs:
         uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6.3.0
         with:
           node-version: '22'
+      # Enforce the installation prerequisite in required CI; this PR's target
+      # review still runs the migration-capable controller from protected main.
+      - name: Verify live native-only rules before installing cleanup
+        if: github.repository == 'dexsword/dextech' && github.event_name == 'pull_request' && github.event.pull_request.number == 36 && github.event.pull_request.head.repo.full_name == 'dexsword/dextech'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node .github/codex/control.cjs verify-rules
       - name: Clean install, complete tests and CI checks
         run: bash scripts/deployment-checks.sh
       - name: Audit production dependencies
