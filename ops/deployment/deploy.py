@@ -42,7 +42,7 @@ CLEAN_ENV = {'PATH': str(Path(NODE).parent) + ':/usr/sbin:/usr/bin:/sbin:/bin',
 RUNTIME = frozenset('server.js package.json package-lock.json index.html support.html '
                     'privacy.html terms.html admin.html cancel.html script.js style.css '
                     'bg3.jpeg btc.jpg eth.jpg favicon.png paypal.jpg sol.jpg '
-                    '.well-known/brave-rewards-verification.txt'.split())
+                    'images/preview.jpg .well-known/brave-rewards-verification.txt'.split())
 SHA_RE = re.compile(r'[0-9a-f]{40}', re.ASCII)
 ERROR_RE = re.compile(r'\berror\b|\bfatal\b|uncaught|unhandled|EACCES|EADDRINUSE|'
                       r'SQLITE_\w+|\bfailed\b|MODULE_NOT_FOUND|invalid_grant', re.I)
