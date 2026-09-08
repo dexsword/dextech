@@ -183,6 +183,16 @@ team whose PRs may merge in sequence.
 
 ## Rollout and acceptance
 
+The owner completed the ruleset switch on 2026-09-08. A subsequent read of the
+effective rules is committed in
+[the rules snapshot](evidence/native-only-rules-2026-09-08.json): `checks` and
+`merge-gate` are the only required contexts, both use integration 15368, strict
+updates remain enabled, and resolved conversations remain required. A regression
+test passes this actual response through the new controller's configuration
+validator. This is a dated observation, not an authorization artifact; every
+ready run still reads and validates the live API response. Recheck the endpoint
+before merging if repository settings change.
+
 The staged native-gate enforcement evidence is recorded in
 [PR #35](https://github.com/dexsword/dextech/pull/35). Retire the legacy requirements
 only after the native gate is recognized and its failure enforcement is verified.

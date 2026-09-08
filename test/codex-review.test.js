@@ -1207,6 +1207,16 @@ test('ruleset requires native checks and rejects retired or incomplete protectio
   await assert.rejects(c.prepareNativeGate(env(), bridge.api));
 });
 
+test('the captured effective repository rules satisfy native-only validation', async () => {
+  const capture = require('../docs/evidence/native-only-rules-2026-09-08.json');
+  assert.equal(capture.repository, 'dexsword/dextech');
+  assert.equal(capture.endpoint, 'GET /repos/dexsword/dextech/rules/branches/main');
+  await c.gateConfiguration(async url => {
+    assert.equal(url, '/repos/dexsword/dextech/rules/branches/main');
+    return capture.rules;
+  });
+});
+
 test('native-only snapshot stops creating and renaming legacy check runs', async t => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'dextech-native-snapshot-'));
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
