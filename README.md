@@ -47,3 +47,11 @@ and native GitHub squash auto-merge. Sensitive changes remain manual-only.
 [Setup, required checks, trust assumptions and first-run procedure](docs/guarded-auto-merge.md)
 include the required OpenAI key, branch protection and downstream deployment-event
 limitation. Repository settings and production are not changed by installing it.
+
+### Shared asset cache versions
+
+After changing `script.js` or `style.css`, run `npm run assets:version` and commit
+the updated HTML files with the asset changes. Each page uses a content-derived
+query parameter so browsers and Cloudflare request the matching release assets.
+The test suite rejects missing or stale versions. This does not change the
+protected deployment process or require a Cloudflare cache purge.
