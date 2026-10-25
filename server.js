@@ -595,7 +595,8 @@ const publicFiles = new Set([
   '/robots.txt', '/sitemap.xml', '/images/preview.jpg',
   '/.well-known/brave-rewards-verification.txt',
 ]);
-const servePublic = express.static(__dirname, { dotfiles: 'deny' });
+// The exact URL allowlist permits only the reviewed .well-known asset.
+const servePublic = express.static(__dirname, { dotfiles: 'allow' });
 app.use((req, res, next) => {
   if (!publicFiles.has(req.path)) return next();
   return servePublic(req, res, next);

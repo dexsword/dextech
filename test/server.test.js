@@ -8,9 +8,14 @@ const { test } = require('node:test');
 
 const ROOT = path.resolve(__dirname, '..');
 
-async function startServer(t, overrides = {}) {
+async function startServer(t, overrides = {}, files = {}) {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'dextech-test-'));
   fs.copyFileSync(path.join(ROOT, 'server.js'), path.join(directory, 'server.js'));
+  for (const [name, content] of Object.entries(files)) {
+    const target = path.join(directory, name);
+    fs.mkdirSync(path.dirname(target), { recursive: true });
+    fs.writeFileSync(target, content);
+  }
   fs.symlinkSync(path.join(ROOT, 'node_modules'), path.join(directory, 'node_modules'), 'dir');
   const child = fork(path.join(__dirname, 'server-probe.cjs'), [], {
     cwd: directory,
@@ -165,6 +170,21 @@ test('backend files cannot be downloaded through static middleware', async t => 
   for (const file of ['/server.js', '/package.json', '/package-lock.json', '/node_modules/express/package.json']) {
     const response = await fetch(base + file);
     assert.equal(response.status, 404, file);
+  }
+});
+
+test('only the allowlisted dot-directory verification file is public', async t => {
+  const { address } = await startServer(t, {}, {
+    '.well-known/brave-rewards-verification.txt': 'synthetic verification',
+    '.well-known/private.txt': 'synthetic private fixture',
+    '.env': 'synthetic private fixture',
+  });
+  const base = `http://${address.address}:${address.port}`;
+  const response = await fetch(base + '/.well-known/brave-rewards-verification.txt');
+  assert.equal(response.status, 200);
+  assert.equal(await response.text(), 'synthetic verification');
+  for (const file of ['/.env', '/.well-known/private.txt']) {
+    assert.equal((await fetch(base + file)).status, 404, file);
   }
 });
 
