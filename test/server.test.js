@@ -60,7 +60,7 @@ async function startServer(t, overrides = {}, files = {}) {
     signal: AbortSignal.timeout(5000),
   });
   assert.equal(response.status, 200);
-  return { address, health: await response.json() };
+  return { address, health: await response.json(), child };
 }
 
 test('defaults to loopback and preserves health with integrations disabled', async t => {
@@ -200,4 +200,47 @@ test('compressed JSON is rejected without decoding and the service stays healthy
   assert.equal(response.status, 415);
   assert.deepEqual(await response.json(), { error: 'Compressed request bodies are not supported' });
   assert.equal((await fetch(base + '/health')).status, 200);
+});
+
+test('booking persists, composes its confirmation, rejects duplicates and frees a cancelled slot', async t => {
+  const token = 'synthetic-admin-token';
+  const { address, child } = await startServer(t, {
+    ADMIN_TOKEN: token,
+    NODE_OPTIONS: `--require=${path.join(__dirname, 'booking-mail-stub.cjs')}`,
+    SMTP_HOST: 'memory.invalid', SMTP_USER: 'synthetic', SMTP_PASS: 'synthetic',
+  });
+  const base = `http://${address.address}:${address.port}`;
+  const availability = await fetch(base + '/api/availability').then(r => r.json());
+  const [date, hours] = Object.entries(availability)[1];
+  const booking = {
+    name: 'Synthetic Customer', email: 'booking@example.invalid', phone: '5555550100',
+    date, hour: hours[0], service: 'Consultation', notes: 'Synthetic isolated booking',
+  };
+  const mail = new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error('Confirmation composition timed out')), 5000);
+    child.once('message', message => { clearTimeout(timer); resolve(message); });
+  });
+  const post = (route, data) => fetch(base + route, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data),
+  });
+  const response = await post('/api/bookings', booking);
+  assert.equal(response.status, 201);
+  const { bookingId } = await response.json();
+  assert.deepEqual(await mail, { type: 'booking-mail', composed: true });
+  assert.equal((await post('/api/bookings', booking)).status, 409);
+  assert.equal((await fetch(base + '/api/bookings')).status, 401);
+  const rows = await fetch(base + '/api/bookings', {
+    headers: { Authorization: `Bearer ${token}` },
+  }).then(r => r.json());
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].id, bookingId);
+  assert.equal(rows[0].status, 'confirmed');
+  const occupied = await fetch(base + '/api/availability/' + date).then(r => r.json());
+  assert.ok(!occupied.available.includes(booking.hour));
+  assert.equal((await post(`/api/bookings/${bookingId}/cancel-customer`, {
+    email: booking.email,
+  })).status, 200);
+  const freed = await fetch(base + '/api/availability/' + date).then(r => r.json());
+  assert.ok(freed.available.includes(booking.hour));
+  assert.equal((await fetch(base + '/health').then(r => r.json())).confirmed_bookings, 0);
 });
