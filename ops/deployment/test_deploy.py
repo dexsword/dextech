@@ -24,6 +24,20 @@ OLD = 'b' * 40
 
 
 class Controls(unittest.TestCase):
+    def test_public_document_root_contains_only_exact_public_assets(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            for name in d.RUNTIME:
+                source = root / name
+                source.parent.mkdir(parents=True, exist_ok=True)
+                source.write_bytes(name.encode())
+            d.publish_public(root)
+            files = {str(p.relative_to(root / 'public'))
+                     for p in (root / 'public').rglob('*') if p.is_file()}
+            self.assertEqual(files, d.RUNTIME - {'server.js', 'package.json', 'package-lock.json'})
+            for name in files:
+                self.assertEqual((root / 'public' / name).read_bytes(), (root / name).read_bytes())
+
     def test_runtime_includes_og_preview_image(self):
         self.assertIn('images/preview.jpg', d.RUNTIME)
 

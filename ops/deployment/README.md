@@ -301,3 +301,24 @@ deploy, modify production, change environment settings or join the tailnet.
 References: [GitHub environment controls](https://docs.github.com/en/actions/how-tos/deploy/configure-and-manage-deployments/control-deployments),
 [manual workflow trigger](https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/trigger-a-workflow),
 [OpenSSH key restrictions](https://man.openbsd.org/sshd.8).
+
+## October 2026 operator hardening
+
+Production uses checksum-verified Node v22.23.4. Keep the root-installed deployer
+and dextech.service on that same runtime. The deployer now creates a root-owned
+`public/` directory from its explicit asset allowlist after source parity checks;
+Apache's DexTech DocumentRoot and Directory must point at `/var/www/dextech/public`.
+Backend code, package manifests and node_modules remain outside that document root.
+Populate public/ for retained releases before changing Apache so rollback remains
+compatible. Install reviewed deploy.py as root; repository deployment never installs
+its own control plane.
+
+DexServe's dedicated `dexserve-firewall.service` loads only its own nftables table,
+accepting established traffic, loopback, Tailscale, ICMP and Cloudflare IPv4/IPv6
+HTTP(S). Public SSH is blocked; administration and deployment use Tailscale.
+The Cloudflare ranges come from https://www.cloudflare.com/ips-v4/ and
+https://www.cloudflare.com/ips-v6/ and should be reviewed when Cloudflare updates them.
+RustDesk is disabled. Apache's operator-managed configuration sanitizes forwarding
+headers using trusted Cloudflare addresses and applies CSP, HSTS, nosniff,
+frame and referrer headers. Clear Cloudflare's cached backend files after blocking
+the origin; a cached response can outlive the origin change.

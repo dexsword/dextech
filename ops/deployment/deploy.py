@@ -33,7 +33,7 @@ BUILD = Path('/var/lib/dextech-build')
 ENVFILE = Path('/etc/dextech/release.env')
 PROTECTED = Path('/etc/dextech/production.env')
 DB = Path('/var/lib/dextech/bookings.db')
-NODE = '/opt/dextech/node-v22.23.2-linux-x64/bin/node'
+NODE = '/opt/dextech/node-v22.23.4-linux-x64/bin/node'
 REPO = 'https://github.com/dexsword/dextech.git'
 CLEAN_ENV = {'PATH': str(Path(NODE).parent) + ':/usr/sbin:/usr/bin:/sbin:/bin',
              'HOME': '/nonexistent', 'LANG': 'C', 'GIT_CONFIG_NOSYSTEM': '1',
@@ -318,6 +318,19 @@ def digest(root):
     return h.hexdigest()
 
 
+def publish_public(root):
+    # Backend code, manifests and dependencies stay outside Apache's document root.
+    public = root / 'public'
+    public.mkdir(mode=0o755)
+    for name in sorted(RUNTIME - {'server.js', 'package.json', 'package-lock.json'}):
+        source = root / name
+        require(source.is_file() and not source.is_symlink())
+        target = public / name
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(source, target)
+        require(target.read_bytes() == source.read_bytes())
+
+
 def build(sha, work):
     repo = work / 'repo'
     run(['git', '-c', 'core.hooksPath=/dev/null', 'clone', '--bare', '--depth=1',
@@ -360,6 +373,7 @@ def build(sha, work):
     (artifact / 'audit.json').unlink()
     require({str(p.relative_to(artifact)) for p in artifact.rglob('*')
              if not p.is_dir() and p.relative_to(artifact).parts[0] != 'node_modules'} == RUNTIME)
+    publish_public(artifact)
     sanitize_artifact(artifact)
     return artifact
 

@@ -157,3 +157,27 @@ test('alternate homepage redirects retain queries and utility responses carry no
     assert.match(utility.headers.get('x-robots-tag'), /noindex/);
   }
 });
+
+
+test('backend files cannot be downloaded through static middleware', async t => {
+  const { address } = await startServer(t);
+  const base = `http://${address.address}:${address.port}`;
+  for (const file of ['/server.js', '/package.json', '/package-lock.json', '/node_modules/express/package.json']) {
+    const response = await fetch(base + file);
+    assert.equal(response.status, 404, file);
+  }
+});
+
+test('compressed JSON is rejected without decoding and the service stays healthy', async t => {
+  const { brotliCompressSync } = require('node:zlib');
+  const { address } = await startServer(t);
+  const base = `http://${address.address}:${address.port}`;
+  const response = await fetch(base + '/api/inquiries', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'Content-Encoding': 'br' },
+    body: brotliCompressSync(Buffer.from('{}')),
+  });
+  assert.equal(response.status, 415);
+  assert.deepEqual(await response.json(), { error: 'Compressed request bodies are not supported' });
+  assert.equal((await fetch(base + '/health')).status, 200);
+});
