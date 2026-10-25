@@ -24,6 +24,41 @@ OLD = 'b' * 40
 
 
 class Controls(unittest.TestCase):
+    def test_public_document_root_contains_only_exact_public_assets(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            for name in d.RUNTIME:
+                source = root / name
+                source.parent.mkdir(parents=True, exist_ok=True)
+                source.write_bytes(name.encode())
+            d.publish_public(root)
+            files = {str(p.relative_to(root / 'public'))
+                     for p in (root / 'public').rglob('*') if p.is_file()}
+            self.assertEqual(files, d.RUNTIME - {'server.js', 'package.json', 'package-lock.json'})
+            for name in files:
+                self.assertEqual((root / 'public' / name).read_bytes(), (root / name).read_bytes())
+
+    def test_public_root_gate_rejects_missing_modified_and_linked_assets(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            with self.assertRaises(RuntimeError):
+                d.verify_public(root)
+            for name in d.RUNTIME:
+                source = root / name
+                source.parent.mkdir(parents=True, exist_ok=True)
+                source.write_bytes(name.encode())
+            d.publish_public(root)
+            d.sanitize_artifact(root)
+            d.verify_public(root)
+            index = root / 'public' / 'index.html'
+            index.write_bytes(b'changed')
+            with self.assertRaises(RuntimeError):
+                d.verify_public(root)
+            index.unlink()
+            index.symlink_to(root / 'index.html')
+            with self.assertRaises(RuntimeError):
+                d.verify_public(root)
+
     def test_runtime_includes_og_preview_image(self):
         self.assertIn('images/preview.jpg', d.RUNTIME)
 
@@ -219,6 +254,7 @@ class Controls(unittest.TestCase):
                         patch.object(d, 'CURRENT', current), patch.object(d, 'ENVFILE', env), \
                         patch.object(d, 'PROTECTED', secret), patch.object(d, 'main_sha', return_value=sha), \
                         patch.object(d, 'protected_snapshot', return_value=[]), \
+                        patch.object(d, 'verify_public'), \
                         patch.object(d, 'verify_protected'), patch.object(d, 'properties', return_value={}), \
                         patch.object(d, 'gates', return_value={}), patch.object(d, 'build') as build, \
                         patch.object(d, 'backup') as backup, patch.object(d, 'transaction') as tx, \

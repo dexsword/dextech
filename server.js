@@ -140,17 +140,18 @@ const stmtById = db.prepare(`SELECT * FROM bookings WHERE id = ?`);
 
 // ─── Express app ──────────────────────────────────────────────────────────────
 const app = express();
-app.set('trust proxy', 1);
+// Apache supplies a single, sanitized visitor address over loopback.
+app.set('trust proxy', 'loopback');
 
 app.use(helmet({
   contentSecurityPolicy: {
     directives: {
       defaultSrc: ["'self'"],
       scriptSrc: ["'self'", "'unsafe-inline'"],
-      styleSrc: ["'self'", "'unsafe-inline'"],
+      styleSrc: ["'self'", "'unsafe-inline'", 'https://fonts.googleapis.com'],
       imgSrc: ["'self'", 'data:'],
       connectSrc: ["'self'"],
-      fontSrc: ["'self'"],
+      fontSrc: ["'self'", 'https://fonts.gstatic.com'],
       objectSrc: ["'none'"],
       upgradeInsecureRequests: [],
     },
@@ -166,8 +167,6 @@ app.use(cors({
   methods: ['GET', 'POST', 'DELETE'],
   allowedHeaders: ['Content-Type', 'Authorization'],
 }));
-
-app.use(express.json({ limit: '16kb' }));
 
 // ─── Rate limiting ────────────────────────────────────────────────────────────
 const bookingLimiter = rateLimit({
@@ -197,6 +196,8 @@ const cancelLimiter = rateLimit({
 });
 
 app.use('/api/', apiLimiter);
+// Browser clients send plain JSON. Reject compressed bodies before decoding.
+app.use(express.json({ limit: '16kb', inflate: false }));
 
 // ─── Request logging ──────────────────────────────────────────────────────────
 app.use((req, _res, next) => {
@@ -389,6 +390,8 @@ app.post('/api/inquiries', inquiryLimiter, async (req, res) => {
   }
   try {
     const transporter = nodemailer.createTransport({
+      disableFileAccess: true,
+      disableUrlAccess: true,
       host: process.env.SMTP_HOST,
       port: parseInt(process.env.SMTP_PORT || '587', 10),
       secure: process.env.SMTP_SECURE === 'true',
@@ -582,7 +585,22 @@ app.use((req, res, next) => {
   }
   next();
 });
-app.use(express.static(__dirname));
+// The application directory also contains backend code and dependencies.
+const publicFiles = new Set([
+  '/', '/index.html', '/support.html', '/privacy.html', '/terms.html',
+  '/admin.html', '/cancel.html', '/script.js', '/style.css', '/favicon.png',
+  '/bg3.jpeg', '/btc.jpg', '/eth.jpg', '/paypal.jpg', '/sol.jpg',
+  '/computer-help-henderson.html', '/wifi-setup-henderson.html',
+  '/small-business-tech-support-henderson.html', '/custom-pc-builds-henderson.html',
+  '/robots.txt', '/sitemap.xml', '/images/preview.jpg',
+  '/.well-known/brave-rewards-verification.txt',
+]);
+// The exact URL allowlist permits only the reviewed .well-known asset.
+const servePublic = express.static(__dirname, { dotfiles: 'allow' });
+app.use((req, res, next) => {
+  if (!publicFiles.has(req.path)) return next();
+  return servePublic(req, res, next);
+});
 
 const HTML_NO_CACHE = { headers: { 'Cache-Control': 'no-store' } };
 app.get('/', (_req, res) => res.sendFile(path.join(__dirname, 'index.html'), HTML_NO_CACHE));
@@ -591,6 +609,9 @@ app.get('/admin', (_req, res) => res.sendFile(path.join(__dirname, 'admin.html')
 
 // ─── Global error handler ─────────────────────────────────────────────────────
 app.use((err, _req, res, _next) => {
+  if (err.type === 'encoding.unsupported') {
+    return res.status(415).json({ error: 'Compressed request bodies are not supported' });
+  }
   if (err.type === 'entity.parse.failed') {
     return res.status(400).json({ error: 'Invalid JSON request' });
   }
@@ -668,6 +689,8 @@ async function sendConfirmationEmail(booking) {
   if (!EMAIL_ENABLED) return;
 
   const transporter = nodemailer.createTransport({
+    disableFileAccess: true,
+    disableUrlAccess: true,
     host: process.env.SMTP_HOST,
     port: parseInt(process.env.SMTP_PORT || '587', 10),
     secure: process.env.SMTP_SECURE === 'true',

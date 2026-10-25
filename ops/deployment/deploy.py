@@ -33,7 +33,7 @@ BUILD = Path('/var/lib/dextech-build')
 ENVFILE = Path('/etc/dextech/release.env')
 PROTECTED = Path('/etc/dextech/production.env')
 DB = Path('/var/lib/dextech/bookings.db')
-NODE = '/opt/dextech/node-v22.23.2-linux-x64/bin/node'
+NODE = '/opt/dextech/node-v22.23.4-linux-x64/bin/node'
 REPO = 'https://github.com/dexsword/dextech.git'
 CLEAN_ENV = {'PATH': str(Path(NODE).parent) + ':/usr/sbin:/usr/bin:/sbin:/bin',
              'HOME': '/nonexistent', 'LANG': 'C', 'GIT_CONFIG_NOSYSTEM': '1',
@@ -318,6 +318,34 @@ def digest(root):
     return h.hexdigest()
 
 
+def publish_public(root):
+    # Backend code, manifests and dependencies stay outside Apache's document root.
+    public = root / 'public'
+    public.mkdir(mode=0o755)
+    for name in sorted(RUNTIME - {'server.js', 'package.json', 'package-lock.json'}):
+        source = root / name
+        require(source.is_file() and not source.is_symlink())
+        target = public / name
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(source, target)
+        require(target.read_bytes() == source.read_bytes())
+
+
+def verify_public(root):
+    public = root / 'public'
+    require(public.is_dir() and not public.is_symlink())
+    expected = {name for name in RUNTIME - {'server.js', 'package.json', 'package-lock.json'}
+                if (root / name).is_file()}
+    require({'index.html', 'support.html', 'admin.html', 'cancel.html'} <= expected)
+    require({str(p.relative_to(public)) for p in public.rglob('*') if not p.is_dir()} == expected)
+    for path in [public, *public.rglob('*')]:
+        require(not path.is_symlink() and (path.is_dir() or path.is_file()))
+        require(path.stat().st_uid == 0 and not path.stat().st_mode & 0o022)
+        require(stat.S_IMODE(path.stat().st_mode) == (0o755 if path.is_dir() else 0o644))
+    for name in expected:
+        require((public / name).read_bytes() == (root / name).read_bytes())
+
+
 def build(sha, work):
     repo = work / 'repo'
     run(['git', '-c', 'core.hooksPath=/dev/null', 'clone', '--bare', '--depth=1',
@@ -360,7 +388,9 @@ def build(sha, work):
     (artifact / 'audit.json').unlink()
     require({str(p.relative_to(artifact)) for p in artifact.rglob('*')
              if not p.is_dir() and p.relative_to(artifact).parts[0] != 'node_modules'} == RUNTIME)
+    publish_public(artifact)
     sanitize_artifact(artifact)
+    verify_public(artifact)
     return artifact
 
 
@@ -436,6 +466,8 @@ def main(argv):
         require(main_sha() == sha)
         previous = CURRENT.resolve(strict=True)
         require(previous.parent == RELEASES and SHA_RE.fullmatch(previous.name))
+        # Reject an incomplete public-root migration before arming any switch.
+        verify_public(previous)
         require(PROTECTED.stat().st_uid == 0 and stat.S_IMODE(PROTECTED.stat().st_mode) == 0o600)
         snapshot = protected_snapshot()
         old_env = ENVFILE.read_bytes()
