@@ -93,6 +93,8 @@ function initBookingWidget() {
   var selectedDate = null;
   var selectedTime = null;
   var availability = {};
+  var availabilityState = 'loading';
+  var availabilityRequest = 0;
   var pendingStripeUrl = null;
   var bookingService = document.getElementById('bookingService');
 
@@ -148,11 +150,13 @@ function initBookingWidget() {
   });
 
   document.getElementById('prevWeek').addEventListener('click', function() {
+    if (availabilityState !== 'ready') return;
     currentWeek.setDate(currentWeek.getDate() - 7);
     renderCalendar();
   });
 
   document.getElementById('nextWeek').addEventListener('click', function() {
+    if (availabilityState !== 'ready') return;
     currentWeek.setDate(currentWeek.getDate() + 7);
     renderCalendar();
   });
@@ -175,6 +179,9 @@ function initBookingWidget() {
   });
 
   function fetchAvailability() {
+    var request = ++availabilityRequest;
+    availabilityState = 'loading';
+    renderCalendar();
     console.log('Fetching availability...');
     fetch('/api/availability')
       .then(function(res) { 
@@ -182,20 +189,28 @@ function initBookingWidget() {
         return res.json(); 
       })
       .then(function(data) {
+        if (request !== availabilityRequest) return;
         availability = data;
+        availabilityState = 'ready';
         renderCalendar();
       })
       .catch(function(err) {
+        if (request !== availabilityRequest) return;
         console.error('Error fetching availability:', err);
-        calendarDays.textContent = 'Calendar temporarily unavailable. Please refresh or call (845) 596-1708.';
+        availabilityState = 'error';
+        renderCalendar();
       });
   }
 
-  function renderCalendarFallback() {
-    renderCalendar();
-  }
-
   function renderCalendar() {
+    if (availabilityState !== 'ready') {
+      calendarDays.textContent = availabilityState === 'error'
+        ? 'Calendar temporarily unavailable. Please refresh or call (845) 596-1708.'
+        : 'Loading calendar…';
+      document.getElementById('prevWeek').disabled = true;
+      document.getElementById('nextWeek').disabled = true;
+      return;
+    }
     var today = businessToday();
     today.setHours(0, 0, 0, 0);
     var maxDate = new Date(today);
@@ -245,6 +260,7 @@ function initBookingWidget() {
   }
 
   function selectDate(dateStr) {
+    if (availabilityState !== 'ready') return;
     selectedDate = dateStr;
     selectedTime = null;
     renderCalendar();

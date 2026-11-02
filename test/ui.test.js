@@ -174,7 +174,7 @@ function waitFor(predicate, timeoutMs = 2000) {
   });
 }
 
-function loadHomepage(t) {
+async function loadHomepage(t) {
   const scrolled = [];
   const fetchCalls = [];
   const dom = new JSDOM(INDEX_HTML, {
@@ -206,8 +206,9 @@ function loadHomepage(t) {
     },
   });
   t.after(() => dom.window.close());
+  const loaded = new Promise(resolve => dom.window.addEventListener('load', resolve, { once: true }));
   dom.window.eval(SCRIPT_JS);
-  dom.window.initBookingWidget();
+  await loaded;
   return { dom, scrolled, fetchCalls };
 }
 
@@ -294,7 +295,7 @@ test('getStripeUrlForService maps paid services from card data-stripe and clears
 });
 
 test('changing bookingService after Book & Pay updates or clears the success Stripe Pay CTA', async t => {
-  const { dom } = loadHomepage(t);
+  const { dom } = await loadHomepage(t);
   const { document } = dom.window;
 
   const tuneUp = Array.from(document.querySelectorAll('.service-buy-btn[data-stripe]')).find(
@@ -316,7 +317,7 @@ test('changing bookingService after Book & Pay updates or clears the success Str
 });
 
 test('booking a paid service from the form alone shows the matching Stripe Pay CTA', async t => {
-  const { dom } = loadHomepage(t);
+  const { dom } = await loadHomepage(t);
   await completeBooking(dom.window, 'Custom PC Build');
   const pay = paymentState(dom.window.document);
   assert.equal(pay.visible, true);
@@ -324,7 +325,7 @@ test('booking a paid service from the form alone shows the matching Stripe Pay C
 });
 
 test('unpaid Book CTAs scroll to booking and pre-select the service without Stripe', async t => {
-  const { dom, scrolled } = loadHomepage(t);
+  const { dom, scrolled } = await loadHomepage(t);
   const { document } = dom.window;
   const homeAutomation = Array.from(document.querySelectorAll('.service-buy-btn[data-service]')).find(
     el => el.getAttribute('data-service') === 'Home Automation'
@@ -340,7 +341,7 @@ test('unpaid Book CTAs scroll to booking and pre-select the service without Stri
 });
 
 test('time selection keeps the fresh per-date slots when returning from the form', async t => {
-  const { dom } = loadHomepage(t);
+  const { dom } = await loadHomepage(t);
   const { document } = dom.window;
   await waitFor(() => document.querySelector('.calendar-day:not(.disabled)'));
   document.querySelector('.calendar-day:not(.disabled)').click();
@@ -351,7 +352,7 @@ test('time selection keeps the fresh per-date slots when returning from the form
 });
 
 test('an older date response cannot replace the newly selected date slots', async t => {
-  const { dom } = loadHomepage(t);
+  const { dom } = await loadHomepage(t);
   const { document } = dom.window;
   await waitFor(() => document.querySelector('.calendar-day:not(.disabled)'));
   document.getElementById('nextWeek').click();
@@ -368,10 +369,57 @@ test('an older date response cannot replace the newly selected date slots', asyn
 });
 
 test('calendar HTTP failure shows an outage rather than offering unchecked dates', async t => {
-  const { dom } = loadHomepage(t);
+  const { dom } = await loadHomepage(t);
   await waitFor(() => dom.window.document.querySelector('.calendar-day:not(.disabled)'));
   dom.window.fetch = async () => ({ ok: false, status: 503, json: async () => ({ error: 'unavailable' }) });
   dom.window.document.getElementById('bookAnother').click();
   await waitFor(() => /temporarily unavailable/.test(dom.window.document.getElementById('calendarDays').textContent));
   assert.equal(dom.window.document.querySelectorAll('.calendar-day').length, 0);
+  const document = dom.window.document;
+  const previous = document.getElementById('prevWeek');
+  const next = document.getElementById('nextWeek');
+  assert.equal(previous.disabled, true);
+  assert.equal(next.disabled, true);
+  previous.click();
+  next.click();
+  // Dispatch also exercises the handlers when a browser does not suppress input.
+  previous.dispatchEvent(new dom.window.MouseEvent('click', { bubbles: true }));
+  next.dispatchEvent(new dom.window.MouseEvent('click', { bubbles: true }));
+  assert.equal(document.querySelectorAll('.calendar-day').length, 0);
+  assert.match(document.getElementById('calendarDays').textContent, /temporarily unavailable/);
+  assert.equal(document.getElementById('step1').classList.contains('active'), true);
+});
+
+test('calendar navigation stays disabled while availability is loading and recovers after success', async t => {
+  const { dom } = await loadHomepage(t);
+  const { document } = dom.window;
+  await waitFor(() => document.querySelector('.calendar-day:not(.disabled)'));
+  let resolveAvailability;
+  dom.window.fetch = () => new Promise(resolve => { resolveAvailability = resolve; });
+  document.getElementById('bookAnother').click();
+  assert.equal(document.getElementById('prevWeek').disabled, true);
+  assert.equal(document.getElementById('nextWeek').disabled, true);
+  document.getElementById('nextWeek').dispatchEvent(new dom.window.MouseEvent('click', { bubbles: true }));
+  assert.equal(document.querySelectorAll('.calendar-day').length, 0);
+  assert.match(document.getElementById('calendarDays').textContent, /Loading calendar/);
+  resolveAvailability({ ok: true, json: async () => ({}) });
+  await waitFor(() => document.querySelector('.calendar-day:not(.disabled)'));
+  assert.equal(document.getElementById('nextWeek').disabled, false);
+});
+
+test('an older availability success cannot reopen dates after the latest request fails', async t => {
+  const { dom } = await loadHomepage(t);
+  const { document } = dom.window;
+  await waitFor(() => document.querySelector('.calendar-day:not(.disabled)'));
+  const pending = [];
+  dom.window.fetch = () => new Promise(resolve => pending.push(resolve));
+  document.getElementById('bookAnother').click();
+  document.getElementById('bookAnother').click();
+  pending[1]({ ok: false, json: async () => ({ error: 'unavailable' }) });
+  await waitFor(() => /temporarily unavailable/.test(document.getElementById('calendarDays').textContent));
+  pending[0]({ ok: true, json: async () => ({}) });
+  await new Promise(resolve => setTimeout(resolve, 20));
+  assert.equal(document.querySelectorAll('.calendar-day').length, 0);
+  assert.equal(document.getElementById('nextWeek').disabled, true);
+  assert.match(document.getElementById('calendarDays').textContent, /temporarily unavailable/);
 });
