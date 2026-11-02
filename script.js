@@ -93,6 +93,8 @@ function initBookingWidget() {
   var selectedDate = null;
   var selectedTime = null;
   var availability = {};
+  var availabilityState = 'loading';
+  var availabilityRequest = 0;
   var pendingStripeUrl = null;
   var bookingService = document.getElementById('bookingService');
 
@@ -113,7 +115,13 @@ function initBookingWidget() {
     return d;
   }
 
-  var currentWeek = getWeekStart(new Date());
+  function businessToday() {
+    var parts = new Intl.DateTimeFormat('en-US', { timeZone: 'America/Los_Angeles', year: 'numeric', month: '2-digit', day: '2-digit' }).formatToParts(new Date());
+    function value(type) { return parts.find(function(p) { return p.type === type; }).value; }
+    return new Date(value('year') + '-' + value('month') + '-' + value('day') + 'T00:00:00');
+  }
+
+  var currentWeek = getWeekStart(businessToday());
 
   fetchAvailability();
 
@@ -142,11 +150,13 @@ function initBookingWidget() {
   });
 
   document.getElementById('prevWeek').addEventListener('click', function() {
+    if (availabilityState !== 'ready') return;
     currentWeek.setDate(currentWeek.getDate() - 7);
     renderCalendar();
   });
 
   document.getElementById('nextWeek').addEventListener('click', function() {
+    if (availabilityState !== 'ready') return;
     currentWeek.setDate(currentWeek.getDate() + 7);
     renderCalendar();
   });
@@ -169,29 +179,39 @@ function initBookingWidget() {
   });
 
   function fetchAvailability() {
+    var request = ++availabilityRequest;
+    availabilityState = 'loading';
+    renderCalendar();
     console.log('Fetching availability...');
     fetch('/api/availability')
       .then(function(res) { 
-        console.log('Availability response:', res.status);
+        if (!res.ok) throw new Error('Calendar temporarily unavailable. Please try again or call us.');
         return res.json(); 
       })
       .then(function(data) {
-        console.log('Availability data:', data);
+        if (request !== availabilityRequest) return;
         availability = data;
+        availabilityState = 'ready';
         renderCalendar();
       })
       .catch(function(err) {
+        if (request !== availabilityRequest) return;
         console.error('Error fetching availability:', err);
-        renderCalendarFallback();
+        availabilityState = 'error';
+        renderCalendar();
       });
   }
 
-  function renderCalendarFallback() {
-    renderCalendar();
-  }
-
   function renderCalendar() {
-    var today = new Date();
+    if (availabilityState !== 'ready') {
+      calendarDays.textContent = availabilityState === 'error'
+        ? 'Calendar temporarily unavailable. Please refresh or call (845) 596-1708.'
+        : 'Loading calendar…';
+      document.getElementById('prevWeek').disabled = true;
+      document.getElementById('nextWeek').disabled = true;
+      return;
+    }
+    var today = businessToday();
     today.setHours(0, 0, 0, 0);
     var maxDate = new Date(today);
     maxDate.setDate(today.getDate() + 35);
@@ -240,6 +260,7 @@ function initBookingWidget() {
   }
 
   function selectDate(dateStr) {
+    if (availabilityState !== 'ready') return;
     selectedDate = dateStr;
     selectedTime = null;
     renderCalendar();
@@ -251,11 +272,17 @@ function initBookingWidget() {
     timeSlots.innerHTML = '<div class="booking-loading"><div class="spinner"></div></div>';
     
     fetch('/api/availability/' + dateStr)
-      .then(function(res) { return res.json(); })
+      .then(function(res) {
+        if (!res.ok) throw new Error('Calendar temporarily unavailable');
+        return res.json();
+      })
       .then(function(data) {
+        if (selectedDate !== dateStr) return;
+        availability[dateStr] = data.available;
         renderTimeSlots(data.available);
       })
       .catch(function(err) {
+        if (selectedDate !== dateStr) return;
         console.error('Error loading time slots:', err);
         timeSlots.innerHTML = '<p style="text-align: center; color: #666;">Error loading times</p>';
       });
@@ -403,7 +430,7 @@ function initBookingWidget() {
     selectedDate = null;
     selectedTime = null;
     pendingStripeUrl = null;
-    currentWeek = getWeekStart(new Date());
+    currentWeek = getWeekStart(businessToday());
     bookingForm.reset();
     bookingError.style.display = 'none';
     var submitBtn = bookingForm.querySelector('button[type="submit"]');
@@ -425,7 +452,7 @@ function initBookingWidget() {
   function formatTime(hour) {
     var suffix = hour >= 12 ? 'PM' : 'AM';
     var displayHour = hour > 12 ? hour - 12 : (hour === 0 ? 12 : hour);
-    return displayHour + ':00 ' + suffix;
+    return displayHour + ':00 ' + suffix + ' Pacific Time';
   }
 }
 

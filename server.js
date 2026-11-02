@@ -235,39 +235,28 @@ function validateBookingInput({ name, email, phone, date, hour, service, notes }
   if (!name || typeof name !== 'string' || name.trim().length < 2 || name.trim().length > 100) {
     errors.push('Name must be 2–100 characters');
   }
-  if (!email || !EMAIL_RE.test(email.trim())) {
+  if (typeof email !== 'string' || email.length > 254 || !EMAIL_RE.test(email.trim())) {
     errors.push('Valid email address required');
   }
-  if (!phone || !PHONE_RE.test(phone.trim())) {
+  if (typeof phone !== 'string' || !PHONE_RE.test(phone.trim()) || phone.replace(/\D/g, '').length < 7) {
     errors.push('Valid phone number required (7–20 digits)');
   }
-  if (!date || !DATE_RE.test(date)) {
-    errors.push('Date must be YYYY-MM-DD format');
-  } else {
-    const d = new Date(date + 'T00:00:00');
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
-    const maxDate = new Date(today);
-    maxDate.setDate(today.getDate() + BOOKING_HORIZON_DAYS);
-    if (isNaN(d.getTime())) {
-      errors.push('Invalid date');
-    } else if (d < today) {
-      errors.push('Cannot book a date in the past');
-    } else if (d > maxDate) {
-      errors.push(`Cannot book more than ${BOOKING_HORIZON_DAYS} days ahead`);
-    } else if (d.getDay() === 0) {
-      errors.push('Sundays are not available');
-    }
+  if (!isValidDate(date)) {
+    errors.push('Date must be a valid YYYY-MM-DD date');
+  } else if (!isBookableDate(date)) {
+    errors.push('Choose an available Monday–Saturday within the next 35 days');
   }
-  const hourNum = parseInt(hour, 10);
-  if (isNaN(hourNum) || !HOURS.includes(hourNum)) {
+  const hourNum = Number(hour);
+  if (!((typeof hour === 'number' || typeof hour === 'string') && String(hour).match(/^\d{1,2}$/)) || !HOURS.includes(hourNum)) {
     errors.push(`Hour must be one of: ${HOURS.join(', ')}`);
+  } else if (isValidDate(date) && laTimeToUTC(date, hourNum) <= new Date()) {
+    errors.push('Cannot book a time in the past');
   }
-  if (!service || !VALID_SERVICES.has(service.trim())) {
+  if (typeof service !== 'string' || !VALID_SERVICES.has(service.trim())) {
     errors.push('Please select a valid service');
   }
-  if (notes && notes.length > 1000) {
-    errors.push('Notes must be under 1000 characters');
+  if (notes !== undefined && (typeof notes !== 'string' || notes.length > 1000)) {
+    errors.push('Notes must be text under 1000 characters');
   }
 
   return errors;
@@ -277,56 +266,92 @@ function validateBookingInput({ name, email, phone, date, hour, service, notes }
 const gcalCache = { periods: [], fetchedAt: 0 };
 const GCAL_CACHE_TTL = 2 * 60 * 1000; // refresh every 2 minutes
 
-async function refreshGCalBusy() {
+async function refreshGCalBusy(force = false) {
   if (!GCAL_ENABLED) return;
-  if (Date.now() - gcalCache.fetchedAt < GCAL_CACHE_TTL) return;
-
-  const timeMin = new Date();
-  timeMin.setHours(0, 0, 0, 0);
-  const timeMax = new Date(timeMin);
-  timeMax.setDate(timeMin.getDate() + BOOKING_HORIZON_DAYS + 1);
-
+  if (!force && Date.now() - gcalCache.fetchedAt < GCAL_CACHE_TTL) return;
+  const today = businessToday();
+  const timeMin = laTimeToUTC(today, 0);
+  const timeMax = laTimeToUTC(addDays(today, BOOKING_HORIZON_DAYS + 1), 0);
   try {
     const calendar = getCalendarClient();
     const calendarId = process.env.GOOGLE_CALENDAR_ID || 'primary';
-    const res = await calendar.events.list({
-      calendarId,
-      timeMin: timeMin.toISOString(),
-      timeMax: timeMax.toISOString(),
-      singleEvents: true,
-      orderBy: 'startTime',
-      maxResults: 500,
+    const events = [];
+    let pageToken;
+    do {
+      const response = await calendar.events.list({
+        calendarId, timeMin: timeMin.toISOString(), timeMax: timeMax.toISOString(),
+        singleEvents: true, orderBy: 'startTime', maxResults: 500, pageToken,
+      }, { timeout: 10000 });
+      events.push(...(response.data.items || []));
+      pageToken = response.data.nextPageToken;
+    } while (pageToken);
+    const periods = events.filter(e => e.status !== 'cancelled' && e.transparency !== 'transparent').map(e => {
+      if (e.start.dateTime) return { start: e.start.dateTime, end: e.end.dateTime };
+      return { start: laTimeToUTC(e.start.date, 0).toISOString(), end: laTimeToUTC(e.end.date, 0).toISOString() };
     });
-
-    const events = (res.data.items || []).filter(e => e.status !== 'cancelled');
-    gcalCache.periods = events.map(e => {
-      if (e.start.dateTime) {
-        // Timed event — use UTC datetimes as-is
-        return { start: e.start.dateTime, end: e.end.dateTime };
-      }
-      // All-day event — convert calendar date to LA midnight in UTC so the
-      // full local day is blocked regardless of the server's timezone
-      return {
-        start: laTimeToUTC(e.start.date, 0).toISOString(),
-        end:   laTimeToUTC(e.end.date,   0).toISOString(),
-      };
-    });
+    gcalCache.periods = periods;
     gcalCache.fetchedAt = Date.now();
-    console.log(`[info] GCal events cache refreshed: ${gcalCache.periods.length} event(s)`);
-  } catch (err) {
-    console.error('[error] GCal events fetch failed:', err.message);
+    console.log(`[info] GCal events cache refreshed: ${periods.length} event(s)`);
+  } catch (_) {
+    // Never offer a slot on the assumption that an unavailable calendar is empty.
+    console.error('[error] Calendar availability check failed');
+    throw new Error('Calendar availability unavailable');
+  }
+}
+
+function businessToday() {
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'America/Los_Angeles', year: 'numeric', month: '2-digit', day: '2-digit',
+  }).formatToParts(new Date());
+  const value = type => parts.find(p => p.type === type).value;
+  return `${value('year')}-${value('month')}-${value('day')}`;
+}
+
+function isValidDate(date) {
+  if (typeof date !== 'string' || !DATE_RE.test(date)) return false;
+  const parsed = new Date(date + 'T00:00:00Z');
+  return Number.isFinite(parsed.getTime()) && parsed.toISOString().slice(0, 10) === date;
+}
+
+function addDays(date, days) {
+  const parsed = new Date(date + 'T00:00:00Z');
+  parsed.setUTCDate(parsed.getUTCDate() + days);
+  return parsed.toISOString().slice(0, 10);
+}
+
+function isBookableDate(date) {
+  const today = businessToday();
+  return isValidDate(date) && date >= today && date <= addDays(today, BOOKING_HORIZON_DAYS)
+    && new Date(date + 'T00:00:00Z').getUTCDay() !== 0;
+}
+
+async function requireCalendarAvailability(res, force = false) {
+  try {
+    await refreshGCalBusy(force);
+    return true;
+  } catch (_) {
+    res.status(503).set('Cache-Control', 'no-store').json({ error: 'Calendar temporarily unavailable. Please try again or call us.' });
+    return false;
   }
 }
 
 function laTimeToUTC(dateStr, hour) {
-  // Determine LA UTC offset at noon on this date (safe from DST boundary at 2am)
-  const noonUTC = new Date(dateStr + 'T12:00:00Z');
-  const laNoon = parseInt(new Intl.DateTimeFormat('en-US', {
-    timeZone: 'America/Los_Angeles', hour: 'numeric', hour12: false,
-  }).format(noonUTC));
-  const offsetHours = 12 - laNoon; // e.g. LA=5am → offset=7 (UTC-7/PDT)
-  const midnightUTC = new Date(dateStr + 'T00:00:00Z').getTime();
-  return new Date(midnightUTC + (hour + offsetHours) * 3_600_000);
+  // Resolve the offset at the requested local hour, including midnight on DST days.
+  const target = new Date(dateStr + 'T00:00:00Z').getTime() + hour * 3_600_000;
+  let candidate = target;
+  const formatter = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'America/Los_Angeles', year: 'numeric', month: '2-digit', day: '2-digit',
+    hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23',
+  });
+  for (let i = 0; i < 3; i++) {
+    const parts = formatter.formatToParts(new Date(candidate));
+    const value = type => Number(parts.find(p => p.type === type).value);
+    const observed = Date.UTC(value('year'), value('month') - 1, value('day'), value('hour'), value('minute'), value('second'));
+    const adjustment = target - observed;
+    candidate += adjustment;
+    if (!adjustment) break;
+  }
+  return new Date(candidate);
 }
 
 function isSlotBlockedByCalendar(dateStr, hour) {
@@ -344,8 +369,9 @@ function getBookedHours(dateStr) {
 }
 
 function getAvailableSlots(dateStr) {
+  if (!isBookableDate(dateStr)) return [];
   const booked = getBookedHours(dateStr);
-  return HOURS.filter(h => !booked.has(h) && !isSlotBlockedByCalendar(dateStr, h));
+  return HOURS.filter(h => laTimeToUTC(dateStr, h) > new Date() && !booked.has(h) && !isSlotBlockedByCalendar(dateStr, h));
 }
 
 // ─── Routes ───────────────────────────────────────────────────────────────────
@@ -416,18 +442,12 @@ app.post('/api/inquiries', inquiryLimiter, async (req, res) => {
 });
 
 app.get('/api/availability', async (_req, res) => {
-  await refreshGCalBusy();
-
-  const today = new Date();
-  today.setHours(0, 0, 0, 0);
+  if (!await requireCalendarAvailability(res)) return;
+  const today = businessToday();
   const availability = {};
-
   for (let i = 0; i <= BOOKING_HORIZON_DAYS; i++) {
-    const d = new Date(today);
-    d.setDate(today.getDate() + i);
-    if (d.getDay() === 0) continue;
-    const dateStr = formatDate(d);
-    availability[dateStr] = getAvailableSlots(dateStr);
+    const dateStr = addDays(today, i);
+    if (isBookableDate(dateStr)) availability[dateStr] = getAvailableSlots(dateStr);
   }
 
   res.set('Cache-Control', 'no-store').json(availability);
@@ -435,22 +455,26 @@ app.get('/api/availability', async (_req, res) => {
 
 app.get('/api/availability/:date', async (req, res) => {
   const { date } = req.params;
-  if (!DATE_RE.test(date)) {
+  if (!isValidDate(date)) {
     return res.status(400).json({ error: 'Invalid date format' });
   }
-  await refreshGCalBusy();
+  if (!await requireCalendarAvailability(res)) return;
   res.set('Cache-Control', 'no-store').json({ date, available: getAvailableSlots(date) });
 });
 
-app.post('/api/bookings', bookingLimiter, (req, res) => {
-  const { name, email, phone, date, hour, service, notes } = req.body;
+app.post('/api/bookings', bookingLimiter, async (req, res) => {
+  const { name, email, phone, date, hour, service, notes } = req.body || {};
 
   const errors = validateBookingInput({ name, email, phone, date, hour, service, notes });
   if (errors.length > 0) {
     return res.status(422).json({ error: errors[0], errors });
   }
 
-  const hourNum = parseInt(hour, 10);
+  if (!await requireCalendarAvailability(res, true)) return;
+  const hourNum = Number(hour);
+  if (isSlotBlockedByCalendar(date, hourNum)) {
+    return res.status(409).json({ error: 'This time is no longer available. Please choose another.' });
+  }
   const cleanName = name.trim();
   const cleanEmail = email.trim().toLowerCase();
   const cleanPhone = phone.trim();
@@ -458,7 +482,7 @@ app.post('/api/bookings', bookingLimiter, (req, res) => {
   const cleanNotes = (notes || '').trim();
 
   const book = db.transaction(() => {
-    const taken = stmtIsBooked.get(date, hourNum);
+    const taken = stmtIsBooked.get(date, hourNum) || laTimeToUTC(date, hourNum) <= new Date();
     if (taken) return null;
 
     const booking = {
@@ -483,13 +507,13 @@ app.post('/api/bookings', bookingLimiter, (req, res) => {
 
   // Fire-and-forget: email ICS to customer + create calendar event for admin
   sendConfirmationEmail(booking).catch(err =>
-    console.error('[error] Confirmation email failed:', err.message)
+    console.error('[error] Confirmation email failed')
   );
   createCalendarEvent(booking).then(eventId => {
     if (eventId) stmtUpdateGcalId.run(eventId, booking.id);
     gcalCache.fetchedAt = 0; // invalidate so next availability check reflects new event
   }).catch(err =>
-    console.error('[error] Calendar event creation failed:', err.message)
+    console.error('[error] Calendar event creation failed')
   );
 
   res.status(201).json({
@@ -536,7 +560,7 @@ app.post('/api/bookings/:id/cancel', requireAdmin, (req, res) => {
 
   if (booking.gcal_event_id) {
     deleteCalendarEvent(booking.gcal_event_id).catch(err =>
-      console.error('[error] Calendar event deletion failed:', err.message)
+      console.error('[error] Calendar event deletion failed')
     );
   }
 
@@ -567,7 +591,7 @@ app.post('/api/bookings/:id/cancel-customer', cancelLimiter, (req, res) => {
 
   if (booking.gcal_event_id) {
     deleteCalendarEvent(booking.gcal_event_id).catch(err =>
-      console.error('[error] Calendar event deletion failed on customer cancel:', err.message)
+      console.error('[error] Calendar event deletion failed on customer cancel')
     );
   }
 
@@ -664,10 +688,9 @@ function rowToBooking(row) {
 
 // ─── Email (customer ICS) ─────────────────────────────────────────────────────
 function buildICS(booking) {
-  const d = booking.date.replace(/-/g, '');
-  const startH = String(booking.hour).padStart(2, '0');
-  const endH = String(booking.hour).padStart(2, '0');
-  const endMin = '30'; // 30-minute sessions
+  const stamp = date => date.toISOString().replace(/[-:]/g, '').replace(/\.\d{3}Z$/, 'Z');
+  const start = laTimeToUTC(booking.date, booking.hour);
+  const end = new Date(start.getTime() + 30 * 60_000);
   const now = new Date().toISOString().replace(/[-:.]/g, '').slice(0, 15) + 'Z';
   return [
     'BEGIN:VCALENDAR',
@@ -676,8 +699,8 @@ function buildICS(booking) {
     'BEGIN:VEVENT',
     `UID:${booking.id}@dextech.cloud`,
     `DTSTAMP:${now}`,
-    `DTSTART:${d}T${startH}0000`,
-    `DTEND:${d}T${endH}${endMin}00`,
+    `DTSTART:${stamp(start)}`,
+    `DTEND:${stamp(end)}`,
     `SUMMARY:Dex Tech – ${booking.service}`,
     `DESCRIPTION:Tech support appointment with Dex Tech.`,
     'END:VEVENT',
@@ -703,7 +726,7 @@ async function sendConfirmationEmail(booking) {
   const formattedDate = new Date(booking.date + 'T00:00:00').toLocaleDateString('en-US', {
     weekday: 'long', year: 'numeric', month: 'long', day: 'numeric',
   });
-  const timeStr = formatTimeStr(booking.hour);
+  const timeStr = formatTimeStr(booking.hour) + ' Pacific Time';
   const fromAddress = process.env.EMAIL_FROM || `"Dex Tech" <bookings@dextech.cloud>`;
 
   await transporter.sendMail({
@@ -737,7 +760,7 @@ async function sendConfirmationEmail(booking) {
     text: `Appointment Confirmed – Dex Tech\n\nHi ${booking.name},\n\nYour appointment is confirmed:\n  Date: ${formattedDate}\n  Time: ${timeStr}\n  Service: ${booking.service}\n  Booking ID: ${booking.id}\n\nTo reschedule or cancel, reply to this email or call (845) 596-1708.\n\nSee you soon!\n— Dex Tech`,
   });
 
-  console.log(`[info] Confirmation email sent to ${booking.email} for booking ${booking.id}`);
+  console.log('[info] Booking confirmation email sent');
 }
 
 // ─── Google Calendar ──────────────────────────────────────────────────────────
@@ -785,7 +808,7 @@ async function createCalendarEvent(booking) {
     resource: event,
     sendUpdates: 'all',
   });
-  console.log(`[info] Calendar event created for booking ${booking.id}: ${response.data.id}`);
+  console.log('[info] Booking calendar event created');
   return response.data.id;
 }
 
@@ -795,7 +818,8 @@ async function deleteCalendarEvent(gcalEventId) {
   const calendar = getCalendarClient();
   const calendarId = process.env.GOOGLE_CALENDAR_ID || 'primary';
   await calendar.events.delete({ calendarId, eventId: gcalEventId, sendUpdates: 'all' });
-  console.log(`[info] Calendar event deleted: ${gcalEventId}`);
+  gcalCache.fetchedAt = 0;
+  console.log('[info] Booking calendar event deleted');
 }
 
 // ─── Start ────────────────────────────────────────────────────────────────────
