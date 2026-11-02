@@ -244,3 +244,90 @@ test('booking persists, composes its confirmation, rejects duplicates and frees 
   assert.ok(freed.available.includes(booking.hour));
   assert.equal((await fetch(base + '/health').then(r => r.json())).confirmed_bookings, 0);
 });
+
+function futureBusinessDate() {
+  const d = new Date();
+  d.setUTCDate(d.getUTCDate() + 2);
+  if (d.getUTCDay() === 0) d.setUTCDate(d.getUTCDate() + 1);
+  return d.toISOString().slice(0, 10);
+}
+function syntheticBooking(date, hour = 9) {
+  return { name: 'Synthetic Customer', email: 'booking@example.invalid', phone: '5555550100', date, hour, service: 'Consultation', notes: '' };
+}
+function calendarEnv(date, scenario) {
+  return {
+    NODE_OPTIONS: `--require=${path.join(__dirname, 'calendar-stub.cjs')}`,
+    GOOGLE_CLIENT_ID: 'synthetic', GOOGLE_CLIENT_SECRET: 'synthetic', GOOGLE_REFRESH_TOKEN: 'synthetic',
+    CALENDAR_TEST_DATE: date, CALENDAR_SCENARIO: scenario,
+  };
+}
+async function postBooking(address, data) {
+  return fetch(`http://${address.address}:${address.port}/api/bookings`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data),
+  });
+}
+
+test('direct booking checks the external calendar before persisting a reservation', async t => {
+  const date = futureBusinessDate();
+  const { address } = await startServer(t, calendarEnv(date, 'busy'));
+  assert.equal((await postBooking(address, syntheticBooking(date))).status, 409);
+  const health = await fetch(`http://${address.address}:${address.port}/health`).then(r => r.json());
+  assert.equal(health.confirmed_bookings, 0);
+});
+
+test('Google read failure closes availability and booking without creating data', async t => {
+  const date = futureBusinessDate();
+  const { address } = await startServer(t, calendarEnv(date, 'failure'));
+  const base = `http://${address.address}:${address.port}`;
+  assert.equal((await fetch(base + '/api/availability')).status, 503);
+  assert.equal((await fetch(base + '/api/availability/' + date)).status, 503);
+  assert.equal((await postBooking(address, syntheticBooking(date))).status, 503);
+  assert.equal((await fetch(base + '/health').then(r => r.json())).confirmed_bookings, 0);
+});
+
+test('calendar pagination and all-day events block slots, transparent events do not', async t => {
+  const date = futureBusinessDate();
+  for (const scenario of ['paged', 'all-day', 'transparent']) {
+    const { address } = await startServer(t, calendarEnv(date, scenario));
+    const { available } = await fetch(`http://${address.address}:${address.port}/api/availability/${date}`).then(r => r.json());
+    if (scenario === 'all-day') assert.equal(available.length, 0);
+    else assert.equal(available.includes(9), scenario === 'transparent');
+  }
+});
+
+test('closed and impossible dates cannot advertise times', async t => {
+  const { address } = await startServer(t);
+  const base = `http://${address.address}:${address.port}`;
+  for (const date of ['2000-01-01', '2026-11-01', '2099-01-01']) {
+    const response = await fetch(base + '/api/availability/' + date);
+    assert.equal(response.status, 200);
+    assert.deepEqual((await response.json()).available, []);
+  }
+  for (const date of ['2026-02-30', '2026-13-01']) {
+    assert.equal((await fetch(base + '/api/availability/' + date)).status, 400);
+  }
+});
+
+test('malformed booking field types and partial hours return validation errors', async t => {
+  const { address } = await startServer(t);
+  const valid = syntheticBooking(futureBusinessDate());
+  for (const change of [{ email: {} }, { phone: {} }, { service: {} }, { notes: {} }, { hour: '9oops' }, { hour: 9.5 }, { phone: '-------' }]) {
+    assert.equal((await postBooking(address, { ...valid, ...change })).status, 422);
+  }
+});
+
+test('Pacific appointment conversion and ICS preserve summer, winter and DST boundaries', () => {
+  const vm = require('node:vm');
+  const source = fs.readFileSync(path.join(ROOT, 'server.js'), 'utf8');
+  const context = vm.createContext({});
+  vm.runInContext(source.slice(source.indexOf('function laTimeToUTC('), source.indexOf('function isSlotBlockedByCalendar('))
+    + source.slice(source.indexOf('function buildICS('), source.indexOf('async function sendConfirmationEmail(')), context);
+  assert.equal(vm.runInContext("laTimeToUTC('2026-03-08', 0).toISOString()", context), '2026-03-08T08:00:00.000Z');
+  assert.equal(vm.runInContext("laTimeToUTC('2026-11-01', 0).toISOString()", context), '2026-11-01T07:00:00.000Z');
+  for (const [date, start] of [['2026-07-15', '20260715T160000Z'], ['2026-11-04', '20261104T170000Z'], ['2026-03-08', '20260308T160000Z'], ['2026-11-01', '20261101T170000Z']]) {
+    context.booking = { ...syntheticBooking(date), id: 'synthetic-id' };
+    const ics = vm.runInContext('buildICS(booking)', context);
+    assert.ok(ics.includes('DTSTART:' + start), ics);
+    assert.ok(ics.includes('DTEND:' + start.replace('0000Z', '3000Z')), ics);
+  }
+});

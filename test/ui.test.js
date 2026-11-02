@@ -338,3 +338,40 @@ test('unpaid Book CTAs scroll to booking and pre-select the service without Stri
   const pay = paymentState(document);
   assert.equal(pay.visible, false);
 });
+
+test('time selection keeps the fresh per-date slots when returning from the form', async t => {
+  const { dom } = loadHomepage(t);
+  const { document } = dom.window;
+  await waitFor(() => document.querySelector('.calendar-day:not(.disabled)'));
+  document.querySelector('.calendar-day:not(.disabled)').click();
+  await waitFor(() => document.querySelector('.time-slot'));
+  document.querySelector('.time-slot').click();
+  document.getElementById('backToTime').click();
+  assert.deepEqual(Array.from(document.querySelectorAll('.time-slot'), el => el.dataset.hour), ['10', '14']);
+});
+
+test('an older date response cannot replace the newly selected date slots', async t => {
+  const { dom } = loadHomepage(t);
+  const { document } = dom.window;
+  await waitFor(() => document.querySelector('.calendar-day:not(.disabled)'));
+  document.getElementById('nextWeek').click();
+  const pending = [];
+  dom.window.fetch = url => new Promise(resolve => pending.push({ url, resolve }));
+  document.querySelectorAll('.calendar-day:not(.disabled)')[0].click();
+  document.getElementById('backToDate').click();
+  document.querySelectorAll('.calendar-day:not(.disabled)')[1].click();
+  pending[1].resolve({ ok: true, json: async () => ({ available: [14] }) });
+  await waitFor(() => document.querySelector('.time-slot'));
+  pending[0].resolve({ ok: true, json: async () => ({ available: [9] }) });
+  await new Promise(resolve => setTimeout(resolve, 20));
+  assert.deepEqual(Array.from(document.querySelectorAll('.time-slot'), el => el.dataset.hour), ['14']);
+});
+
+test('calendar HTTP failure shows an outage rather than offering unchecked dates', async t => {
+  const { dom } = loadHomepage(t);
+  await waitFor(() => dom.window.document.querySelector('.calendar-day:not(.disabled)'));
+  dom.window.fetch = async () => ({ ok: false, status: 503, json: async () => ({ error: 'unavailable' }) });
+  dom.window.document.getElementById('bookAnother').click();
+  await waitFor(() => /temporarily unavailable/.test(dom.window.document.getElementById('calendarDays').textContent));
+  assert.equal(dom.window.document.querySelectorAll('.calendar-day').length, 0);
+});
