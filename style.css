@@ -1661,3 +1661,591 @@ button {
 .quote-trap { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
 #quoteStatus { font-weight: 600; }
 @media (min-width: 640px) { .service-detail-links { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+
+/* Premium Minimal homepage. Scoped to preserve existing secondary pages. */
+.premium-home {
+  --color-bg:#0d1117;
+  --color-bg-alt:#131a23;
+  --color-white:#141c27;
+  --color-dark:#f0f4fa;
+  --color-body:#b4bfce;
+  --color-border:#2a3545;
+  --color-primary:#78abff;
+  --color-primary-dark:#9dc1ff;
+  --color-primary-light:#448cff;
+  --color-accent:#74dce8;
+  --max-width:1200px;
+  --header-height:72px;
+  color-scheme:dark
+}
+.premium-home {
+  background:#0d1117;
+  color:#b4bfce
+}
+.premium-home h1,
+.premium-home h2,
+.premium-home h3,
+.premium-home h4 {
+  color:#f0f4fa
+}
+.premium-home svg {
+  flex-shrink:0
+}
+.premium-home .header {
+  position:sticky;
+  top:0;
+  background:#0d1117f5;
+  border-bottom:1px solid #26303e;
+  backdrop-filter:blur(12px)
+}
+.premium-home .logo,
+.premium-home .footer-logo {
+  color:#fff
+}
+.premium-home .logo span,
+.premium-home .footer-logo span {
+  color:#64b4ff
+}
+.premium-home .header-inner {
+  max-width:1200px
+}
+.premium-home .nav-links a {
+  color:#c4cdd9
+}
+.premium-home .hero {
+  padding:90px 0 85px;
+  background:none;
+  overflow:hidden
+}
+.premium-home .hero .container {
+  display:grid;
+  grid-template-columns:1.25fr 1fr;
+  align-items:center;
+  gap:45px
+}
+.premium-home .hero-content {
+  text-align:left;
+  max-width:none
+}
+.premium-home .eyebrow {
+  font-size:11px;
+  letter-spacing:.18em;
+  color:#91b9ee;
+  margin-bottom:22px
+}
+.premium-home .hero-badge {
+  background:none;
+  color:#c1cddd;
+  border:0;
+  padding:0;
+  margin-bottom:20px;
+  justify-content:flex-start
+}
+.premium-home .hero-title {
+  font-size:clamp(38px,4.5vw,64px);
+  line-height:1.09;
+  font-weight:600;
+  letter-spacing:-.045em;
+  color:#f5f7fb
+}
+.premium-home .hero-title span {
+  color:#8ebaff;
+  background:none;
+  -webkit-text-fill-color:initial
+}
+.premium-home .hero-description {
+  font-size:17px;
+  line-height:1.8;
+  margin:24px 0 30px;
+  color:#b4bfce;
+  max-width:540px
+}
+.premium-home .hero-cta {
+  justify-content:flex-start
+}
+.premium-home .btn {
+  border-radius:8px;
+  min-height:46px;
+  font-weight:600;
+  transition:transform .18s,background .18s
+}
+.premium-home .btn:hover {
+  transform:translateY(-2px)
+}
+.premium-home .btn-primary {
+  background:#367df1;
+  color:#fff;
+  border:1px solid #488cff;
+  box-shadow:none
+}
+.premium-home .btn-primary:hover {
+  background:#2469dc;
+  color:#fff
+}
+.premium-home .btn-secondary {
+  background:transparent;
+  color:#e5edf8;
+  border:1px solid #425066
+}
+.premium-home .hero-art {
+  border:1px solid #2a3849;
+  border-radius:24px;
+  background:linear-gradient(145deg,#172232,#101720);
+  padding:24px;
+  box-shadow:0 30px 90px #0003
+}
+.premium-home .hero-art svg {
+  width:100%;
+  height:auto
+}
+.premium-home .art-label,
+.premium-home .art-foot {
+  font-size:10px;
+  letter-spacing:.16em;
+  color:#9badc4
+}
+.premium-home .art-foot {
+  display:flex;
+  justify-content:space-between
+}
+.premium-home .trust-section {
+  background:#10161e;
+  border-block:1px solid #27313f;
+  padding:32px 0
+}
+.premium-home .trust-grid {
+  gap:30px
+}
+.premium-home .trust-item {
+  text-align:left
+}
+.premium-home .trust-icon {
+  margin:0 0 14px;
+  background:none;
+  color:#8fbaff;
+  width:28px;
+  height:28px
+}
+.premium-home .trust-item h3 {
+  font-size:15px
+}
+.premium-home .trust-item p {
+  font-size:13px;
+  color:#aebccc
+}
+.premium-home .services,
+.premium-home .contact,
+.premium-home .subscription,
+.premium-home .seo-section {
+  background:transparent;
+  padding:85px 0
+}
+.premium-home .section-title {
+  text-align:left;
+  letter-spacing:-.035em;
+  font-size:38px;
+  font-weight:600
+}
+.premium-home .section-subtitle {
+  text-align:left;
+  margin-left:0;
+  color:#aebccc
+}
+.premium-home .services-grid {
+  gap:18px
+}
+.premium-home .service-card {
+  background:#141b24;
+  border:1px solid #2a3544;
+  border-radius:14px;
+  padding:28px;
+  box-shadow:none;
+  display:flex;
+  flex-direction:column;
+  align-items:flex-start
+}
+.premium-home .service-card:hover {
+  border-color:#5887bd;
+  box-shadow:0 12px 32px #0002;
+  transform:translateY(-3px)
+}
+.premium-home .service-icon {
+  background:#1d2a3c;
+  color:#8abaff;
+  border-radius:12px
+}
+.premium-home .service-title {
+  font-size:19px;
+  letter-spacing:-.015em
+}
+.premium-home .service-description {
+  color:#b5c0cf;
+  flex:1
+}
+.premium-home .service-price {
+  color:#edf4ff;
+  display:block;
+  font-size:19px;
+  margin:20px 0 16px
+}
+.premium-home .service-card .btn {
+  margin-top:12px;
+  background:transparent;
+  border-color:#425777;
+  color:#accbff
+}
+.premium-home .cta-section {
+  padding:0
+}
+.premium-home .cta-box {
+  background:#192638;
+  border:1px solid #35465e;
+  border-radius:16px
+}
+.premium-home .cta-content h2 {
+  color:#f2f6ff
+}
+.premium-home .cta-content p {
+  color:#bdcadd
+}
+.premium-home .subscription-box {
+  position:relative;
+  text-align:left;
+  padding:52px;
+  background:linear-gradient(120deg,#18283d,#111b28);
+  border:1px solid #476388;
+  border-radius:20px;
+  max-width:none;
+  display:grid;
+  grid-template-columns:1.2fr 1fr;
+  column-gap:65px
+}
+.premium-home .subscription-icon {
+  display:none
+}
+.premium-home .subscription-title,
+.premium-home .subscription-tagline,
+.premium-home .subscription-features {
+  grid-column:1
+}
+.premium-home .subscription-title {
+  font-size:42px;
+  letter-spacing:-.04em
+}
+.premium-home .subscription-tagline {
+  color:#bccbdd
+}
+.premium-home .subscription-features {
+  margin:20px 0;
+  max-width:none
+}
+.premium-home .subscription-features li {
+  color:#d1dbe8
+}
+.premium-home .subscription-pricing {
+  grid-column:2;
+  grid-row:1/4;
+  align-self:center;
+  text-align:center
+}
+.premium-home .subscription-price {
+  font-size:60px
+}
+.premium-home .subscription-cta {
+  grid-column:2;
+  grid-row:3/5;
+  align-self:end;
+  justify-content:center
+}
+.premium-home .seo-section {
+  padding:36px 0;
+  border-bottom:1px solid #263341
+}
+.premium-home .seo-copy {
+  max-width:850px
+}
+.premium-home .seo-copy p {
+  margin:16px 0
+}
+.premium-home .service-detail-links {
+  display:flex;
+  gap:20px;
+  flex-wrap:wrap;
+  margin-top:20px
+}
+.premium-home .quote-panel,
+.premium-home .booking-widget {
+  background:#141c27;
+  border:1px solid #344256;
+  border-radius:16px;
+  padding:28px
+}
+.premium-home .quote-panel>p {
+  margin:14px 0
+}
+.premium-home .quote-panel {
+  margin-bottom:40px
+}
+.premium-home .booking-header {
+  background:transparent
+}
+.premium-home .booking-form input,
+.premium-home .booking-form select,
+.premium-home .booking-form textarea {
+  background:#0e151f;
+  color:#edf2fb;
+  border:1px solid #526078;
+  border-radius:7px;
+  min-height:46px
+}
+.premium-home .booking-form label {
+  color:#dae3ef
+}
+.premium-home .booking-form {
+  gap:20px
+}
+.premium-home .calendar-day,
+.premium-home .time-slot,
+.premium-home .calendar-nav button {
+  background:#172334;
+  color:#dce8f7;
+  border:1px solid #425473
+}
+.premium-home .calendar-day.disabled {
+  color:#8e9bad;
+  background:#111822
+}
+.premium-home .calendar-day.selected,
+.premium-home .time-slot.selected {
+  background:#2968cf;
+  color:white
+}
+.premium-home .calendar-day .day-name,
+.premium-home .calendar-day .day-num {
+  color:inherit
+}
+.premium-home .contact-method-icon {
+  background:#17273d;
+  color:#9bc6ff
+}
+.premium-home .footer {
+  background:#080c12;
+  border-top:1px solid #273445
+}
+.premium-home .footer p,
+.premium-home .footer a {
+  color:#aebbd0
+}
+.premium-home .quote-trap {
+  display:none
+}
+.premium-home .confirmation-details {
+  color:#deeaff;
+  background:#19283d
+}
+.premium-home :focus-visible {
+  outline:3px solid #8ce5ff;
+  outline-offset:4px
+}
+.premium-home section[id] {
+  scroll-margin-top:90px
+}
+@media(max-width:800px) {
+.premium-home .hero .container {
+  grid-template-columns:1fr;
+  gap:36px
+}
+.premium-home .hero {
+  padding:48px 0
+}
+.premium-home .hero-art {
+  max-width:480px;
+  width:100%;
+  margin:auto;
+  padding:18px
+}
+.premium-home .hero-art svg {
+  max-height:230px
+}
+.premium-home .hero-title {
+  font-size:44px
+}
+.premium-home .hero-description {
+  font-size:16px
+}
+.premium-home .services-grid {
+  grid-template-columns:repeat(2,1fr)
+}
+.premium-home .subscription-box {
+  display:block;
+  padding:30px
+}
+.premium-home .subscription-pricing {
+  text-align:left;
+  margin:26px 0
+}
+.premium-home .subscription-cta {
+  justify-content:flex-start
+}
+.premium-home .section-title {
+  font-size:32px
+}
+.premium-home .services,
+.premium-home .contact,
+.premium-home .subscription {
+  padding:56px 0
+}
+.premium-home .trust-grid {
+  grid-template-columns:repeat(2,1fr)
+}
+.premium-home .nav-links {
+  background:#111c29
+}
+.premium-home .contact-wrapper {
+  grid-template-columns:1fr
+}
+}
+@media(max-width:520px) {
+.premium-home .container {
+  padding-inline:22px
+}
+.premium-home .services-grid {
+  grid-template-columns:1fr
+}
+.premium-home .hero-title {
+  font-size:39px
+}
+.premium-home .hero-cta {
+  gap:12px
+}
+.premium-home .hero-cta .btn {
+  padding:12px 16px
+}
+.premium-home .service-card {
+  padding:26px
+}
+.premium-home .hero-art svg {
+  max-height:200px
+}
+.premium-home .subscription-title {
+  font-size:35px
+}
+.premium-home .subscription-price {
+  font-size:48px
+}
+.premium-home .quote-panel,
+.premium-home .booking-widget {
+  padding:20px
+}
+.premium-home .week-calendar {
+  gap:3px
+}
+.premium-home .calendar-day {
+  padding:10px 1px;
+  min-width:0
+}
+.premium-home .trust-grid {
+  gap:24px
+}
+.premium-home .subscription-cta {
+  flex-direction:column
+}
+.premium-home .contact-form {
+  min-width:0
+}
+.premium-home .footer-grid {
+  grid-template-columns:1fr
+}
+.premium-home .booking-nav {
+  flex-wrap:wrap
+}
+}
+@media(prefers-reduced-motion:reduce) {
+.premium-home *,
+.premium-home *::before,
+.premium-home *::after {
+  animation:none!important;
+  transition:none!important;
+  scroll-behavior:auto!important
+}
+}
+.premium-home .cal-day-name,
+.premium-home .cal-day-num {
+  color:inherit
+}
+.premium-home .skip-link {
+  background:#164f9f;
+  color:white
+}
+.premium-home .mobile-menu-btn {
+  color:#e4eeff
+}
+.premium-home .service-card,
+.premium-home .trust-item {
+  opacity:1!important;
+  transform:none!important
+}
+.premium-home .subscription .subscription-price,
+.premium-home .subscription .subscription-title,
+.premium-home .footer-title,
+.premium-home .footer .footer-logo {
+  color:#eef5ff
+}
+.premium-home .subscription .btn-secondary {
+  color:#dfebff
+}
+.premium-home .subscription .btn-primary {
+  background:#367df1;
+  color:#fff;
+  box-shadow:none
+}
+.premium-home .hero::before,
+.premium-home .hero::after {
+  display:none
+}
+.premium-home .cal-day-name {
+  color:#adbed3
+}
+.premium-home .calendar-day.disabled {
+  opacity:.55
+}
+.premium-home .subscription-price span {
+  color:#b7c7dc
+}
+.premium-home .contact-form {
+  background:transparent;
+  border:0;
+  padding:0
+}
+@media(max-width:768px) {
+.premium-home .nav-links {
+  display:none;
+  position:absolute;
+  transform:none;
+  top:100%;
+  bottom:auto;
+  max-height:75vh;
+  overflow-y:auto
+}
+.premium-home .nav-links.active {
+  display:flex
+}
+.premium-home .nav-phone {
+  width:auto!important;
+  margin:8px 16px
+}
+.premium-home .header {
+  height:72px
+}
+.premium-home .header-inner {
+  height:72px
+}
+}
+.premium-home .service-icon {
+  background: #1d2a3c;
+
+}
+.premium-home .service-icon svg {
+  color: #9dc8ff;
+
+}
