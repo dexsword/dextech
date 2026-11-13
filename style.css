@@ -2220,6 +2220,7 @@ button {
 @media(max-width:768px) {
 .premium-home .nav-links {
   display:none;
+  position:absolute;
   transform:none;
   top:100%;
   bottom:auto;
