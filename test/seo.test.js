@@ -74,3 +74,55 @@ test('quote form switches contact method, posts an inquiry, and preserves input 
   assert.equal(doc.getElementById('quoteName').value, '');
   assert.equal(doc.getElementById('quoteContact').type, 'email');
 });
+
+test('search metadata, service schema and breadcrumbs agree with visible content', () => {
+  const sitemap = new JSDOM(read('sitemap.xml'), { contentType: 'text/xml' });
+  const descriptions = new Set();
+  for (const loc of sitemap.window.document.querySelectorAll('loc')) {
+    const url = loc.textContent;
+    const file = new URL(url).pathname.slice(1) || 'index.html';
+    const dom = new JSDOM(read(file));
+    const doc = dom.window.document;
+    const description = doc.querySelector('meta[name="description"]').content;
+    assert.ok(description.length > 40 && !descriptions.has(description), `${file}: unique useful description`);
+    descriptions.add(description);
+    assert.equal(doc.querySelector('meta[property="og:url"]').content, url);
+    assert.equal(doc.querySelector('meta[property="og:title"]').content, doc.title);
+    assert.equal(doc.querySelector('meta[property="og:description"]').content, description);
+    assert.equal(doc.querySelector('meta[name="twitter:description"]').content, description);
+    assert.ok(!doc.querySelector('a[href^="index.html"]'), 'Use canonical internal links');
+    const graph = JSON.parse(doc.querySelector('script[type="application/ld+json"]').textContent)['@graph'];
+    const page = graph.find(node => node['@type'] === 'WebPage');
+    assert.equal(page.url, url);
+    assert.equal(page.description, description);
+    if (file === 'index.html') {
+      assert.equal(graph.find(node => node['@type'] === 'WebSite').name, 'Dex Tech');
+      const offers = graph.find(node => node['@type'] === 'LocalBusiness').hasOfferCatalog.itemListElement;
+      const cards = [...doc.querySelectorAll('.service-card')];
+      assert.equal(offers.length, cards.length);
+      cards.forEach((card, i) => {
+        assert.equal(offers[i].itemOffered.name, card.querySelector('.service-title').textContent.trim());
+        assert.equal(offers[i].itemOffered.description, card.querySelector('.service-description').textContent.trim());
+      });
+    }
+    if (file.endsWith('-henderson.html')) {
+      const breadcrumb = graph.find(node => node['@type'] === 'BreadcrumbList');
+      assert.deepEqual(breadcrumb.itemListElement.map(item => item.position), [1, 2]);
+      assert.equal(breadcrumb.itemListElement[1].name, doc.querySelector('h1').textContent);
+      assert.equal(breadcrumb.itemListElement[1].item, url);
+      assert.equal(doc.querySelector('[aria-current="page"]').textContent, doc.querySelector('h1').textContent);
+      assert.equal(graph.find(node => node['@type'] === 'Service')['@id'], page.mainEntity['@id']);
+    }
+    dom.window.close();
+  }
+  sitemap.window.close();
+});
+
+test('utility pages remain noindex and outside the public sitemap', () => {
+  for (const file of ['admin.html', 'cancel.html']) {
+    const dom = new JSDOM(read(file));
+    assert.match(dom.window.document.querySelector('meta[name="robots"]').content, /noindex/);
+    assert.ok(!read('sitemap.xml').includes(file));
+    dom.window.close();
+  }
+});
