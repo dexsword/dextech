@@ -322,3 +322,32 @@ RustDesk is disabled. Apache's operator-managed configuration sanitizes forwardi
 headers using trusted Cloudflare addresses and applies CSP, HSTS, nosniff,
 frame and referrer headers. Clear Cloudflare's cached backend files after blocking
 the origin; a cached response can outlive the origin change.
+
+## November 23, 2026 runtime-pin reconciliation
+
+The deployment operator's handoff confirmed that DexServe was already running
+`/opt/dextech/node-v22.23.5-linux-x64/bin/node` before this source pin changed.
+The operator verified the signed Node release, protected the runtime's ownership
+and permissions, and installed the reviewed deployer as root. The installed
+helper's reported SHA-256 was
+`2424451e5447c63a959e955cea76c295aba54f31c2b0ea8feaa9e4c9d164bdca`.
+Its source is the deploy.py blob in PR #47 commit
+`e1c47026670048451ed15da7691600bc2de47d1d`; subsequent documentation changes
+do not change that helper.
+
+The operator reported that the documented root-only `--validate` passed against
+then-current main `07cafa11c05396855b67e2d90ecd555e91272c11` before release.
+That validation includes the exact running-executable comparison, live health,
+Calendar and protected-state gates. It performed no build, switch or restart.
+
+After that handoff, the normal
+[production workflow, attempt 3](https://github.com/dexsword/dextech/actions/runs/45254583260/attempts/3)
+passed both checks and deployment on the same main SHA at 22:28 UTC. Public
+`/health` independently reported `status: ok` and that exact release SHA.
+The live website-services section and quote links were then checked without
+submitting forms. This pin reconciles repository source with the verified host
+runtime; no service-definition or runtime-version change is part of this PR.
+
+The exact `/proc/<pid>/exe == NODE` check remains intact. On any other host,
+separately verify the installed runtime and service executable and complete the
+documented root-only validation before installing or using this helper.
