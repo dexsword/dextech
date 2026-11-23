@@ -33,7 +33,7 @@ BUILD = Path('/var/lib/dextech-build')
 ENVFILE = Path('/etc/dextech/release.env')
 PROTECTED = Path('/etc/dextech/production.env')
 DB = Path('/var/lib/dextech/bookings.db')
-NODE = '/opt/dextech/node-v22.23.4-linux-x64/bin/node'
+NODE = '/opt/dextech/node-v22.23.5-linux-x64/bin/node'
 REPO = 'https://github.com/dexsword/dextech.git'
 CLEAN_ENV = {'PATH': str(Path(NODE).parent) + ':/usr/sbin:/usr/bin:/sbin:/bin',
              'HOME': '/nonexistent', 'LANG': 'C', 'GIT_CONFIG_NOSYSTEM': '1',
