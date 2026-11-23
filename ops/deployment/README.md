@@ -304,7 +304,7 @@ References: [GitHub environment controls](https://docs.github.com/en/actions/how
 
 ## October 2026 operator hardening
 
-Production uses checksum-verified Node v22.23.4. Keep the root-installed deployer
+Production uses checksum-verified Node v22.23.5. Keep the root-installed deployer
 and dextech.service on that same runtime. The deployer now creates a root-owned
 `public/` directory from its explicit asset allowlist after source parity checks;
 Apache's DexTech DocumentRoot and Directory must point at `/var/www/dextech/public`.
